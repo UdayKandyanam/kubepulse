@@ -1,6 +1,6 @@
 # KubePulse
 
-KubePulse reads a JSON snapshot of a Kubernetes cluster and tells you what is wrong with it. One command, no cluster connection, no agents to install.
+KubePulse reads a JSON snapshot of a Kubernetes cluster and tells you what is wrong with it. It can also build that snapshot for you with read only kubectl calls, and compare two snapshots to show what changed. No agents to install, and nothing in it changes a cluster.
 
 ## Why I built it
 
@@ -29,6 +29,8 @@ That produces a `kubepulse` binary in the current directory. `make test` runs th
 ./kubepulse diagnose examples/broken.json
 ./kubepulse diagnose --format json examples/broken.json
 ./kubepulse diagnose --fail-on high examples/broken.json; echo $?
+./kubepulse diff examples/healthy.json examples/broken.json
+./kubepulse collect --output snapshot.json
 ```
 
 The healthy example prints `No problems found in this snapshot.` The broken example is a small invented cluster with several seeded problems. Its report looks like this:
@@ -76,6 +78,50 @@ LOW (1)
 Findings are grouped by severity: critical, high, medium, low. The JSON format has the same findings in the same order, with a count per severity, so scripts get stable output they can diff or file against a ticket.
 
 Exit codes: `0` normally, `1` when `--fail-on` is set and a finding at or above that severity exists, `2` for a bad file or bad flags. With `--fail-on high`, the broken example exits `1` and the healthy example exits `0`. That makes the command usable as a gate in a script that captures snapshots on a schedule.
+
+## Collect a snapshot from a cluster
+
+`collect` builds a snapshot from a live cluster so the file does not have to be assembled by hand:
+
+```sh
+./kubepulse collect --output snapshot.json
+./kubepulse collect --namespace shop --kubeconfig ~/.kube/config
+./kubepulse diagnose snapshot.json
+```
+
+It runs kubectl with read only verbs: `get` for pods, deployments, nodes, and events, plus a raw `get` against the metrics API for pod memory usage. The cluster name in the snapshot is the current context name, and the capture time is stamped when the command runs. Pod usage is optional: on a cluster without metrics-server that one read fails, and the snapshot is still written, just without usage numbers. Without `--output` the snapshot goes to stdout. If kubectl is not installed the command stops and says so: `kubepulse: kubectl not found in PATH: install kubectl or add it to PATH, then try again`.
+
+## Compare two snapshots
+
+`diff` diagnoses two snapshots and compares the findings. A finding matches across snapshots on its detector, object, and summary. The report has three sections:
+
+```sh
+./kubepulse diff examples/healthy.json examples/broken.json
+```
+
+```text
+KubePulse diff for demo-cluster
+9 new, 0 resolved, 0 unchanged
+
+NEW (9)
+  Node node-02: node is reporting MemoryPressure
+  Node node-03: node is reporting DiskPressure
+  Deployment shop/checkout: rollout is stuck at 1 of 3 updated replicas
+  Pod batch/worker-5c7d8e9f6-m4n8q: container worker was OOMKilled (exit code 137) and has restarted 6 times
+  Pod shop/api-7849c6f5d9-xk2lp: container api is in CrashLoopBackOff after 14 restarts
+  Pod shop/web-6b9d7c4f8-p7r3s: container web cannot pull image registry.example.com/shop/web:v2.4.1 (ImagePullBackOff)
+  Pod batch/report-job-8f6e5d4c3-t9w2z: pod has been Pending and cannot be scheduled
+  Pod shop/cache-7f8e6d5c4-j6k9m: container cache is using 94% of its memory limit
+  Pod tools/debug-shell: containers without resource limits: shell
+
+RESOLVED (0)
+  None
+
+UNCHANGED (0)
+  None
+```
+
+Run the same pair in reverse and the 9 findings land under RESOLVED instead. The JSON format has the same three groups as arrays named `new`, `resolved`, and `unchanged`, with counts in a summary block. `--fail-on` works here too, but it only looks at new findings: a diff where everything resolved exits `0` even at `--fail-on low`, and the healthy to broken diff above exits `1` at `--fail-on high`. That is the shape I want for a scheduled job: collect on an interval, diff against the last snapshot, and page only when something new crosses the line.
 
 ## Snapshot format
 
@@ -141,7 +187,7 @@ Each detector is a small function over the snapshot, with its own tests. Severit
 
 ## Design choices
 
-Why a snapshot file instead of a live cluster connection: a file works anywhere, including from a laptop with no cluster access, and it can be attached to an incident ticket so the report can be checked later against exactly the state that produced it. It also makes the detectors trivial to test. Live capture is a collector problem, and collectors can be swapped without touching the diagnosis code.
+Why a snapshot file instead of a live cluster connection: a file works anywhere, including from a laptop with no cluster access, and it can be attached to an incident ticket so the report can be checked later against exactly the state that produced it. It also makes the detectors trivial to test. The collector follows the same split: it only gathers state through read only kubectl calls, and the detectors never know where the file came from, so the two halves can change independently.
 
 Why diagnose only: the moment a tool can change things, every run needs a permissions conversation, and the tool stops being something you reach for casually at 3 AM. Reading state and suggesting next steps keeps it safe to run anywhere. The next step is advice for a human, not an action the tool takes.
 
@@ -151,12 +197,14 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 * The memory detector needs usage numbers in the snapshot. Without `metrics` fields it stays silent rather than guessing.
 * The 90 percent memory threshold and the severity assignments are fixed in code. Reasonable defaults, but they are not tuned to any particular cluster.
 * KubePulse does not read logs, so for a crashloop it can point at the container and the restart count, not at the stack trace.
+* Diff matches findings on their summary text. A finding whose summary changes between snapshots, a crashloop restart count climbing from 9 to 14, shows up as one resolved and one new finding rather than one unchanged finding. I know about this one and accept it for now: the alternative is matching on less, and calling two different problems the same finding is worse.
+* Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. It is a capture tool, not a watcher.
 
 ## Roadmap
 
-* A collector subcommand that builds a snapshot from kubectl output, so the file does not have to be assembled by hand.
-* A diff mode that compares two snapshots and reports what changed between them.
 * A small config file for thresholds and severity overrides, for teams that disagree with my defaults.
+* A watch mode that collects on an interval and diffs against the previous snapshot, so the collect and diff halves run as one loop.
+* Detectors for Jobs and CronJobs: failed jobs, and cronjobs that have missed their schedule.
 
 ## License
 
