@@ -1,0 +1,1 @@
+{"apiVersion":"metrics.k8s.io/v1beta1","items":[{"containers":[{"name":"web","usage":{"cpu":"12m","memory":"102400Ki"}}],"metadata":{"name":"web-5d6c7b8f9-h3j5k","namespace":"shop"}},{"containers":[{"name":"api","usage":{"cpu":"40m","memory":"204800Ki"}}],"metadata":{"name":"api-7849c6f5d9-xk2lp","namespace":"shop"}}],"kind":"PodMetricsList"}
