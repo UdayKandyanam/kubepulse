@@ -45,15 +45,26 @@ func run(args []string) int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  kubepulse diagnose [--format text|json] [--fail-on critical|high|medium|low] <snapshot.json>")
-	fmt.Fprintln(os.Stderr, "  kubepulse diff [--format text|json] [--fail-on critical|high|medium|low] <before.json> <after.json>")
+	fmt.Fprintln(os.Stderr, "  kubepulse diagnose [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] <snapshot.json>")
+	fmt.Fprintln(os.Stderr, "  kubepulse diff [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] <before.json> <after.json>")
 	fmt.Fprintln(os.Stderr, "  kubepulse collect [--kubeconfig <path>] [--namespace <ns>] [--output <file>]")
+}
+
+// loadConfig returns the default config when no file is named, and
+// the file settings when one is. A bad file is a hard error: running
+// with defaults the user did not ask for would hide the mistake.
+func loadConfig(path string) (diagnose.Config, error) {
+	if path == "" {
+		return diagnose.DefaultConfig(), nil
+	}
+	return diagnose.LoadConfig(path)
 }
 
 func runDiagnose(args []string) int {
 	fs := flag.NewFlagSet("diagnose", flag.ContinueOnError)
 	format := fs.String("format", "text", "output format: text or json")
 	failOn := fs.String("fail-on", "", "exit with code 1 when a finding at or above this severity exists")
+	configPath := fs.String("config", "", "config file with detector thresholds and severity overrides")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -75,12 +86,17 @@ func runDiagnose(args []string) int {
 		}
 	}
 
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
+		return 2
+	}
 	snap, err := snapshot.Load(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
 		return 2
 	}
-	findings := diagnose.Diagnose(snap)
+	findings := diagnose.DiagnoseWithConfig(snap, cfg)
 
 	switch *format {
 	case "json":
@@ -103,6 +119,7 @@ func runDiff(args []string) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	format := fs.String("format", "text", "output format: text or json")
 	failOn := fs.String("fail-on", "", "exit with code 1 when a new finding at or above this severity exists")
+	configPath := fs.String("config", "", "config file with detector thresholds and severity overrides")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -124,6 +141,11 @@ func runDiff(args []string) int {
 		}
 	}
 
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
+		return 2
+	}
 	before, err := snapshot.Load(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
@@ -134,7 +156,7 @@ func runDiff(args []string) int {
 		fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
 		return 2
 	}
-	res := diff.Compare(diagnose.Diagnose(before), diagnose.Diagnose(after))
+	res := diff.Compare(diagnose.DiagnoseWithConfig(before, cfg), diagnose.DiagnoseWithConfig(after, cfg))
 
 	switch *format {
 	case "json":

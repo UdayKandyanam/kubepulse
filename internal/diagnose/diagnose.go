@@ -61,16 +61,30 @@ type Finding struct {
 	NextStep string   `json:"nextStep"`
 }
 
-// Diagnose runs every detector and returns findings sorted by severity,
-// then object, then detector, so output is stable between runs.
+// Diagnose runs every detector with the default config and returns
+// findings sorted by severity, then object, then detector, so output
+// is stable between runs.
 func Diagnose(s *snapshot.Snapshot) []Finding {
+	return DiagnoseWithConfig(s, DefaultConfig())
+}
+
+// DiagnoseWithConfig runs every detector with the given config. The
+// config sets the memory threshold the memory detector uses, and any
+// severity override replaces the severity a detector assigned before
+// the findings are sorted.
+func DiagnoseWithConfig(s *snapshot.Snapshot, cfg Config) []Finding {
 	var findings []Finding
 	findings = append(findings, detectContainerStates(s)...)
 	findings = append(findings, detectPendingPods(s)...)
 	findings = append(findings, detectRollouts(s)...)
 	findings = append(findings, detectResourceLimits(s)...)
-	findings = append(findings, detectMemoryPressurePods(s)...)
+	findings = append(findings, detectMemoryPressurePods(s, cfg.MemoryThresholdPercent)...)
 	findings = append(findings, detectNodePressure(s)...)
+	for i := range findings {
+		if sev, ok := cfg.SeverityOverrides[findings[i].Detector]; ok {
+			findings[i].Severity = sev
+		}
+	}
 	sortFindings(findings)
 	return findings
 }
@@ -247,8 +261,9 @@ func detectResourceLimits(s *snapshot.Snapshot) []Finding {
 }
 
 // detectMemoryPressurePods flags containers whose recorded memory usage
-// is at or above 90 percent of their limit.
-func detectMemoryPressurePods(s *snapshot.Snapshot) []Finding {
+// is at or above thresholdPercent of their limit. The default
+// threshold is 90 percent, set in DefaultConfig.
+func detectMemoryPressurePods(s *snapshot.Snapshot, thresholdPercent float64) []Finding {
 	var out []Finding
 	for _, pod := range s.Pods {
 		for _, c := range pod.Containers {
@@ -260,7 +275,7 @@ func detectMemoryPressurePods(s *snapshot.Snapshot) []Finding {
 				continue
 			}
 			pct := float64(c.Metrics.MemoryUsageBytes) / float64(limit) * 100
-			if pct < 90 {
+			if pct < thresholdPercent {
 				continue
 			}
 			out = append(out, Finding{

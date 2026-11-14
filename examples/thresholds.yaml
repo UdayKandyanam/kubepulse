@@ -1,0 +1,12 @@
+# Example KubePulse config. Pass it with the config flag:
+#   kubepulse diagnose --config examples/thresholds.yaml examples/broken.json
+# Every setting is optional. Anything left out keeps its default.
+
+# Flag a container when its memory usage reaches this percent of its
+# limit. Default is 90.
+memory_threshold_percent: 80
+
+# Severity overrides, one line per detector. Names not listed here
+# keep the severity their detector assigns.
+severities:
+  no-resource-limits: medium

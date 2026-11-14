@@ -29,6 +29,7 @@ That produces a `kubepulse` binary in the current directory. `make test` runs th
 ./kubepulse diagnose examples/broken.json
 ./kubepulse diagnose --format json examples/broken.json
 ./kubepulse diagnose --fail-on high examples/broken.json; echo $?
+./kubepulse diagnose --config examples/thresholds.yaml examples/broken.json
 ./kubepulse diff examples/healthy.json examples/broken.json
 ./kubepulse collect --output snapshot.json
 ```
@@ -123,6 +124,38 @@ UNCHANGED (0)
 
 Run the same pair in reverse and the 9 findings land under RESOLVED instead. The JSON format has the same three groups as arrays named `new`, `resolved`, and `unchanged`, with counts in a summary block. `--fail-on` works here too, but it only looks at new findings: a diff where everything resolved exits `0` even at `--fail-on low`, and the healthy to broken diff above exits `1` at `--fail-on high`. That is the shape I want for a scheduled job: collect on an interval, diff against the last snapshot, and page only when something new crosses the line.
 
+## Tune thresholds with a config file
+
+My defaults will not fit every cluster. A config file changes two things: the percent of its memory limit at which a container gets flagged, and the severity any detector reports. Both `diagnose` and `diff` take one with `--config`.
+
+```yaml
+# examples/thresholds.yaml
+memory_threshold_percent: 80
+
+severities:
+  no-resource-limits: medium
+```
+
+The format is a small subset of YAML that I parse with the standard library, so the tool still has no dependencies. Anything left out keeps its default. Unknown keys, unknown detector names, and bad severities are errors with the line number named, and a missing file is an error too: silently falling back to defaults would hide the mistake. Running the broken example with this file moves the no resource limits finding from low to medium:
+
+```text
+KubePulse report for demo-cluster
+9 findings: 2 critical, 4 high, 3 medium, 0 low
+
+MEDIUM (3)
+  Pod batch/report-job-8f6e5d4c3-t9w2z: pod has been Pending and cannot be scheduled
+    Evidence: 0/3 nodes are available: 3 Insufficient cpu.
+    Next step: Check node capacity, taints and tolerations, and the pod resource requests. A request no node can satisfy will sit here indefinitely.
+  Pod shop/cache-7f8e6d5c4-j6k9m: container cache is using 94% of its memory limit
+    Evidence: usage 480Mi of limit 512Mi at snapshot time
+    Next step: Check whether usage is still climbing. A flat line near the limit is a sizing question; a climb is a leak until proven otherwise.
+  Pod tools/debug-shell: containers without resource limits: shell
+    Evidence: limits block is missing cpu or memory for the named containers
+    Next step: Set limits from measured usage, then watch for a week. Limits set from a guess become the next incident.
+```
+
+That last finding is the same pod the default report puts under LOW (1). Overrides apply before sorting and before the `--fail-on` check, so raising a detector to critical makes `--fail-on high` exit 1 on it as well.
+
 ## Snapshot format
 
 A snapshot is one JSON object with pods, deployments, nodes, and events. Both files in `examples/` are complete, valid snapshots, and all the names in them are invented.
@@ -174,7 +207,7 @@ Field notes:
 
 ## Detectors
 
-Each detector is a small function over the snapshot, with its own tests. Severities are fixed per detector, apart from node pressure, which is critical because an unhealthy node puts every pod on it at risk.
+Each detector is a small function over the snapshot, with its own tests. The severities below are the defaults: a config file can override any of them, as the config section above describes. Node pressure defaults to critical because an unhealthy node puts every pod on it at risk.
 
 * `crashloop` (high): a container waiting with reason CrashLoopBackOff.
 * `oomkilled` (high): a container whose last terminated state has reason OOMKilled.
@@ -182,7 +215,7 @@ Each detector is a small function over the snapshot, with its own tests. Severit
 * `unschedulable` (medium): a Pending pod with a FailedScheduling event, or a PodScheduled condition set to False. A Pending pod with neither is left alone; new pods look like that too.
 * `rollout-stuck` (high): updated replicas behind the desired count and a Progressing condition set to False. A rollout that is behind but still progressing is not flagged.
 * `no-resource-limits` (low): a pod with a container missing a CPU or memory limit. One finding per pod, naming the containers.
-* `memory-close-to-limit` (medium): memory usage at or above 90 percent of the container limit, from the metrics fields.
+* `memory-close-to-limit` (medium): memory usage at or above 90 percent of the container limit by default, from the metrics fields. A config file can move that percent.
 * `node-pressure` (critical): a node reporting MemoryPressure or DiskPressure.
 
 ## Design choices
@@ -195,14 +228,13 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 
 * The report is only as good as the snapshot. Stale input gives a confident looking report about a cluster that has already moved on.
 * The memory detector needs usage numbers in the snapshot. Without `metrics` fields it stays silent rather than guessing.
-* The 90 percent memory threshold and the severity assignments are fixed in code. Reasonable defaults, but they are not tuned to any particular cluster.
+* The config file covers the memory threshold and severity overrides only. It does not turn detectors off, and its parser accepts the two settings shown in the config section, not general YAML: no anchors, no inline maps, no lists.
 * KubePulse does not read logs, so for a crashloop it can point at the container and the restart count, not at the stack trace.
 * Diff matches findings on their summary text. A finding whose summary changes between snapshots, a crashloop restart count climbing from 9 to 14, shows up as one resolved and one new finding rather than one unchanged finding. I know about this one and accept it for now: the alternative is matching on less, and calling two different problems the same finding is worse.
 * Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. It is a capture tool, not a watcher.
 
 ## Roadmap
 
-* A small config file for thresholds and severity overrides, for teams that disagree with my defaults.
 * A watch mode that collects on an interval and diffs against the previous snapshot, so the collect and diff halves run as one loop.
 * Detectors for Jobs and CronJobs: failed jobs, and cronjobs that have missed their schedule.
 
