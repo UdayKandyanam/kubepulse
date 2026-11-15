@@ -34,7 +34,10 @@ func DefaultConfig() Config {
 func KnownDetectors() []string {
 	return []string{
 		"crashloop",
+		"cronjob-never-ran",
+		"cronjob-suspended",
 		"image-pull",
+		"job-failed",
 		"memory-close-to-limit",
 		"no-resource-limits",
 		"node-pressure",

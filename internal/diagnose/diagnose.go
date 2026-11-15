@@ -80,6 +80,8 @@ func DiagnoseWithConfig(s *snapshot.Snapshot, cfg Config) []Finding {
 	findings = append(findings, detectResourceLimits(s)...)
 	findings = append(findings, detectMemoryPressurePods(s, cfg.MemoryThresholdPercent)...)
 	findings = append(findings, detectNodePressure(s)...)
+	findings = append(findings, detectJobs(s)...)
+	findings = append(findings, detectCronJobs(s)...)
 	for i := range findings {
 		if sev, ok := cfg.SeverityOverrides[findings[i].Detector]; ok {
 			findings[i].Severity = sev
@@ -308,6 +310,95 @@ func detectNodePressure(s *snapshot.Snapshot) []Finding {
 					NextStep: "Cordon the node if workloads are being evicted, then find what is consuming the resource. For disk pressure, image and log growth are the usual causes.",
 				})
 			}
+		}
+	}
+	return out
+}
+
+// detectJobs flags jobs that have failed for good. A job counts as
+// failed when it carries a Failed condition set to True, or when it
+// has failed pods, nothing still active, and no Complete condition.
+// A job that is still running with some failed pods is left alone:
+// its retries may still succeed.
+func detectJobs(s *snapshot.Snapshot) []Finding {
+	var out []Finding
+	for _, j := range s.Jobs {
+		failed := false
+		complete := false
+		evidence := ""
+		for _, cond := range j.Conditions {
+			if cond.Type == "Failed" && cond.Status == "True" {
+				failed = true
+				evidence = evidenceOr(cond.Message, "Failed condition is True")
+				if cond.Reason != "" {
+					evidence = cond.Reason + ": " + evidence
+				}
+			}
+			if cond.Type == "Complete" && cond.Status == "True" {
+				complete = true
+			}
+		}
+		if !failed && !complete && j.Failed > 0 && j.Active == 0 {
+			failed = true
+			evidence = fmt.Sprintf("failed pods %d, succeeded %d, active %d, with no Complete condition", j.Failed, j.Succeeded, j.Active)
+		}
+		if !failed {
+			continue
+		}
+		if evidence == "" {
+			evidence = fmt.Sprintf("failed pods %d, succeeded %d, active %d", j.Failed, j.Succeeded, j.Active)
+		} else if j.Failed > 0 {
+			evidence += fmt.Sprintf("; failed pods %d, succeeded %d", j.Failed, j.Succeeded)
+		}
+		out = append(out, Finding{
+			Severity: SeverityHigh,
+			Detector: "job-failed",
+			Object:   "Job " + j.Ref(),
+			Summary:  "job has failed and will not run again without a change",
+			Evidence: evidence,
+			NextStep: "Read the logs of a failed pod from this job, fix the cause, then delete and recreate the job. A failed job does not retry on its own.",
+		})
+	}
+	return out
+}
+
+// detectCronJobs flags cronjobs that are suspended and cronjobs that
+// have never been scheduled. A suspended cronjob is not also flagged
+// as never ran: the suspension already explains the missing runs.
+func detectCronJobs(s *snapshot.Snapshot) []Finding {
+	var out []Finding
+	for _, cj := range s.CronJobs {
+		if cj.Suspend {
+			evidence := "suspend is true"
+			if cj.Schedule != "" {
+				evidence += " for schedule " + cj.Schedule
+			}
+			if cj.LastScheduleTime != "" {
+				evidence += "; last scheduled at " + cj.LastScheduleTime
+			}
+			out = append(out, Finding{
+				Severity: SeverityMedium,
+				Detector: "cronjob-suspended",
+				Object:   "CronJob " + cj.Ref(),
+				Summary:  "cronjob is suspended and is not creating jobs",
+				Evidence: evidence,
+				NextStep: "Check whether the suspension was on purpose. If it was a pause during an incident, set suspend back to false and confirm the next scheduled run creates a job.",
+			})
+			continue
+		}
+		if cj.LastScheduleTime == "" {
+			evidence := "lastScheduleTime is empty"
+			if cj.Schedule != "" {
+				evidence += " for schedule " + cj.Schedule
+			}
+			out = append(out, Finding{
+				Severity: SeverityMedium,
+				Detector: "cronjob-never-ran",
+				Object:   "CronJob " + cj.Ref(),
+				Summary:  "cronjob has never been scheduled",
+				Evidence: evidence,
+				NextStep: "Check that the cronjob is in the namespace I expect and that its schedule is valid. If it was just created, wait for the first scheduled time and check again.",
+			})
 		}
 	}
 	return out

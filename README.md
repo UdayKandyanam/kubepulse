@@ -38,7 +38,7 @@ The healthy example prints `No problems found in this snapshot.` The broken exam
 
 ```text
 KubePulse report for demo-cluster
-9 findings: 2 critical, 4 high, 2 medium, 1 low
+12 findings: 2 critical, 5 high, 4 medium, 1 low
 
 CRITICAL (2)
   Node node-02: node is reporting MemoryPressure
@@ -48,10 +48,13 @@ CRITICAL (2)
     Evidence: Attempting to reclaim inodes
     Next step: Cordon the node if workloads are being evicted, then find what is consuming the resource. For disk pressure, image and log growth are the usual causes.
 
-HIGH (4)
+HIGH (5)
   Deployment shop/checkout: rollout is stuck at 1 of 3 updated replicas
     Evidence: updated replicas 1 of 3 desired, ready 2, available 2; Progressing is False (ProgressDeadlineExceeded): Deployment has failed to progress: timed out after 10m0s
     Next step: Look at the newest ReplicaSet pods first. A rollout usually stalls because the new pods are failing, and those pod findings are in this same report.
+  Job batch/nightly-report: job has failed and will not run again without a change
+    Evidence: BackoffLimitExceeded: Job has reached the specified backoff limit; failed pods 3, succeeded 0
+    Next step: Read the logs of a failed pod from this job, fix the cause, then delete and recreate the job. A failed job does not retry on its own.
   Pod batch/worker-5c7d8e9f6-m4n8q: container worker was OOMKilled (exit code 137) and has restarted 6 times
     Evidence: last terminated state reason OOMKilled, memory limit 512Mi
     Next step: Compare memory usage with the limit. Raise the limit if the workload genuinely needs it, or find the growth in the application if it does not.
@@ -62,7 +65,13 @@ HIGH (4)
     Evidence: Back-off pulling image "registry.example.com/shop/web:v2.4.1": manifest unknown
     Next step: Check the image name and tag, then confirm the node can reach the registry and that the pull secret is present in this namespace.
 
-MEDIUM (2)
+MEDIUM (4)
+  CronJob batch/cleanup: cronjob is suspended and is not creating jobs
+    Evidence: suspend is true for schedule 0 2 * * *; last scheduled at 2026-11-10T02:00:00Z
+    Next step: Check whether the suspension was on purpose. If it was a pause during an incident, set suspend back to false and confirm the next scheduled run creates a job.
+  CronJob shop/hourly-sync: cronjob has never been scheduled
+    Evidence: lastScheduleTime is empty for schedule 0 * * * *
+    Next step: Check that the cronjob is in the namespace I expect and that its schedule is valid. If it was just created, wait for the first scheduled time and check again.
   Pod batch/report-job-8f6e5d4c3-t9w2z: pod has been Pending and cannot be scheduled
     Evidence: 0/3 nodes are available: 3 Insufficient cpu.
     Next step: Check node capacity, taints and tolerations, and the pod resource requests. A request no node can satisfy will sit here indefinitely.
@@ -90,7 +99,7 @@ Exit codes: `0` normally, `1` when `--fail-on` is set and a finding at or above 
 ./kubepulse diagnose snapshot.json
 ```
 
-It runs kubectl with read only verbs: `get` for pods, deployments, nodes, and events, plus a raw `get` against the metrics API for pod memory usage. The cluster name in the snapshot is the current context name, and the capture time is stamped when the command runs. Pod usage is optional: on a cluster without metrics-server that one read fails, and the snapshot is still written, just without usage numbers. Without `--output` the snapshot goes to stdout. If kubectl is not installed the command stops and says so: `kubepulse: kubectl not found in PATH: install kubectl or add it to PATH, then try again`.
+It runs kubectl with read only verbs: `get` for pods, deployments, nodes, and events, plus a raw `get` against the metrics API for pod memory usage. It does not collect jobs or cronjobs yet, so those detectors only run on snapshots that include them, such as the examples or a snapshot assembled by hand. The cluster name in the snapshot is the current context name, and the capture time is stamped when the command runs. Pod usage is optional: on a cluster without metrics-server that one read fails, and the snapshot is still written, just without usage numbers. Without `--output` the snapshot goes to stdout. If kubectl is not installed the command stops and says so: `kubepulse: kubectl not found in PATH: install kubectl or add it to PATH, then try again`.
 
 ## Compare two snapshots
 
@@ -102,15 +111,18 @@ It runs kubectl with read only verbs: `get` for pods, deployments, nodes, and ev
 
 ```text
 KubePulse diff for demo-cluster
-9 new, 0 resolved, 0 unchanged
+12 new, 0 resolved, 0 unchanged
 
-NEW (9)
+NEW (12)
   Node node-02: node is reporting MemoryPressure
   Node node-03: node is reporting DiskPressure
   Deployment shop/checkout: rollout is stuck at 1 of 3 updated replicas
+  Job batch/nightly-report: job has failed and will not run again without a change
   Pod batch/worker-5c7d8e9f6-m4n8q: container worker was OOMKilled (exit code 137) and has restarted 6 times
   Pod shop/api-7849c6f5d9-xk2lp: container api is in CrashLoopBackOff after 14 restarts
   Pod shop/web-6b9d7c4f8-p7r3s: container web cannot pull image registry.example.com/shop/web:v2.4.1 (ImagePullBackOff)
+  CronJob batch/cleanup: cronjob is suspended and is not creating jobs
+  CronJob shop/hourly-sync: cronjob has never been scheduled
   Pod batch/report-job-8f6e5d4c3-t9w2z: pod has been Pending and cannot be scheduled
   Pod shop/cache-7f8e6d5c4-j6k9m: container cache is using 94% of its memory limit
   Pod tools/debug-shell: containers without resource limits: shell
@@ -122,7 +134,7 @@ UNCHANGED (0)
   None
 ```
 
-Run the same pair in reverse and the 9 findings land under RESOLVED instead. The JSON format has the same three groups as arrays named `new`, `resolved`, and `unchanged`, with counts in a summary block. `--fail-on` works here too, but it only looks at new findings: a diff where everything resolved exits `0` even at `--fail-on low`, and the healthy to broken diff above exits `1` at `--fail-on high`. That is the shape I want for a scheduled job: collect on an interval, diff against the last snapshot, and page only when something new crosses the line.
+Run the same pair in reverse and the 12 findings land under RESOLVED instead. The JSON format has the same three groups as arrays named `new`, `resolved`, and `unchanged`, with counts in a summary block. `--fail-on` works here too, but it only looks at new findings: a diff where everything resolved exits `0` even at `--fail-on low`, and the healthy to broken diff above exits `1` at `--fail-on high`. That is the shape I want for a scheduled job: collect on an interval, diff against the last snapshot, and page only when something new crosses the line.
 
 ## Tune thresholds with a config file
 
@@ -140,9 +152,15 @@ The format is a small subset of YAML that I parse with the standard library, so 
 
 ```text
 KubePulse report for demo-cluster
-9 findings: 2 critical, 4 high, 3 medium, 0 low
+12 findings: 2 critical, 5 high, 5 medium, 0 low
 
-MEDIUM (3)
+MEDIUM (5)
+  CronJob batch/cleanup: cronjob is suspended and is not creating jobs
+    Evidence: suspend is true for schedule 0 2 * * *; last scheduled at 2026-11-10T02:00:00Z
+    Next step: Check whether the suspension was on purpose. If it was a pause during an incident, set suspend back to false and confirm the next scheduled run creates a job.
+  CronJob shop/hourly-sync: cronjob has never been scheduled
+    Evidence: lastScheduleTime is empty for schedule 0 * * * *
+    Next step: Check that the cronjob is in the namespace I expect and that its schedule is valid. If it was just created, wait for the first scheduled time and check again.
   Pod batch/report-job-8f6e5d4c3-t9w2z: pod has been Pending and cannot be scheduled
     Evidence: 0/3 nodes are available: 3 Insufficient cpu.
     Next step: Check node capacity, taints and tolerations, and the pod resource requests. A request no node can satisfy will sit here indefinitely.
@@ -158,7 +176,7 @@ That last finding is the same pod the default report puts under LOW (1). Overrid
 
 ## Snapshot format
 
-A snapshot is one JSON object with pods, deployments, nodes, and events. Both files in `examples/` are complete, valid snapshots, and all the names in them are invented.
+A snapshot is one JSON object with pods, deployments, nodes, events, jobs, and cronjobs. The jobs and cronjobs fields are optional: a snapshot without them still loads, and the job detectors stay silent. Both files in `examples/` are complete, valid snapshots, and all the names in them are invented.
 
 ```json
 {
@@ -194,6 +212,12 @@ A snapshot is one JSON object with pods, deployments, nodes, and events. Both fi
   ],
   "events": [
     { "type": "Warning", "reason": "FailedScheduling", "object": { "kind": "Pod", "namespace": "batch", "name": "report-job-8f6e5d4c3-t9w2z" }, "message": "0/3 nodes are available: 3 Insufficient cpu." }
+  ],
+  "jobs": [
+    { "name": "nightly-report", "namespace": "batch", "completions": 1, "active": 0, "succeeded": 0, "failed": 3, "conditions": [ { "type": "Failed", "status": "True", "reason": "BackoffLimitExceeded", "message": "Job has reached the specified backoff limit" } ] }
+  ],
+  "cronJobs": [
+    { "name": "cleanup", "namespace": "batch", "schedule": "0 2 * * *", "suspend": true, "lastScheduleTime": "2026-11-10T02:00:00Z", "active": 0 }
   ]
 }
 ```
@@ -204,6 +228,7 @@ Field notes:
 * Resource quantities stay as strings (`512Mi`, `1`, `500m`), the way they appear in a manifest. Memory metrics are plain byte counts in `metrics.memoryUsageBytes`.
 * Conditions use the usual `type`, `status`, `reason`, `message` fields.
 * Unknown fields are ignored, so a collector can include extra data without breaking the tool.
+* Job counts are plain numbers (`active`, `succeeded`, `failed`). A cronjob with no runs yet has an empty `lastScheduleTime`; that is the signal the never ran detector reads.
 
 ## Detectors
 
@@ -217,6 +242,9 @@ Each detector is a small function over the snapshot, with its own tests. The sev
 * `no-resource-limits` (low): a pod with a container missing a CPU or memory limit. One finding per pod, naming the containers.
 * `memory-close-to-limit` (medium): memory usage at or above 90 percent of the container limit by default, from the metrics fields. A config file can move that percent.
 * `node-pressure` (critical): a node reporting MemoryPressure or DiskPressure.
+* `job-failed` (high): a job with a Failed condition set to True, or with failed pods, nothing still active, and no Complete condition. A job that is still running is left alone, because its retries may still succeed.
+* `cronjob-suspended` (medium): a cronjob with `suspend` set to true. It is not also flagged as never ran, because the suspension explains the missing runs.
+* `cronjob-never-ran` (medium): a cronjob that is not suspended and has an empty `lastScheduleTime`.
 
 ## Design choices
 
@@ -231,12 +259,13 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 * The config file covers the memory threshold and severity overrides only. It does not turn detectors off, and its parser accepts the two settings shown in the config section, not general YAML: no anchors, no inline maps, no lists.
 * KubePulse does not read logs, so for a crashloop it can point at the container and the restart count, not at the stack trace.
 * Diff matches findings on their summary text. A finding whose summary changes between snapshots, a crashloop restart count climbing from 9 to 14, shows up as one resolved and one new finding rather than one unchanged finding. I know about this one and accept it for now: the alternative is matching on less, and calling two different problems the same finding is worse.
+* The cronjob never ran detector cannot tell a cronjob created a minute ago from one that has been broken for a week: both have an empty `lastScheduleTime`. I flag both and let the next step sort it out.
 * Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. It is a capture tool, not a watcher.
 
 ## Roadmap
 
 * A watch mode that collects on an interval and diffs against the previous snapshot, so the collect and diff halves run as one loop.
-* Detectors for Jobs and CronJobs: failed jobs, and cronjobs that have missed their schedule.
+* A stale cronjob detector that compares `lastScheduleTime` with `capturedAt`, so a cronjob that ran before but has missed recent schedules gets flagged too.
 
 ## License
 

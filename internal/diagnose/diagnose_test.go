@@ -211,3 +211,78 @@ func TestSortedAndShouldFail(t *testing.T) {
 		t.Error("ParseSeverity should reject unknown values")
 	}
 }
+
+func TestJobFailedFromCondition(t *testing.T) {
+	s := &snapshot.Snapshot{Jobs: []snapshot.Job{{
+		Name: "nightly-report", Namespace: "batch", Completions: 1, Failed: 3,
+		Conditions: []snapshot.Condition{
+			{Type: "Failed", Status: "True", Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit"},
+		},
+	}}}
+	got := findByDetector(Diagnose(s), "job-failed")
+	if len(got) != 1 || got[0].Severity != SeverityHigh || got[0].Object != "Job batch/nightly-report" {
+		t.Fatalf("want 1 high job-failed finding, got %+v", got)
+	}
+}
+
+func TestJobFailedFromCountsWithoutCondition(t *testing.T) {
+	s := &snapshot.Snapshot{Jobs: []snapshot.Job{{
+		Name: "import", Namespace: "batch", Failed: 2, Active: 0, Succeeded: 0,
+	}}}
+	got := findByDetector(Diagnose(s), "job-failed")
+	if len(got) != 1 {
+		t.Fatalf("want 1 job-failed finding, got %+v", got)
+	}
+}
+
+func TestJobStillRunningIsNotFailed(t *testing.T) {
+	s := &snapshot.Snapshot{Jobs: []snapshot.Job{{
+		Name: "import", Namespace: "batch", Failed: 1, Active: 1,
+	}}}
+	if got := findByDetector(Diagnose(s), "job-failed"); len(got) != 0 {
+		t.Errorf("want no findings for a running job, got %+v", got)
+	}
+}
+
+func TestCompletedJobIsNotFailed(t *testing.T) {
+	s := &snapshot.Snapshot{Jobs: []snapshot.Job{{
+		Name: "nightly-report", Namespace: "batch", Succeeded: 1,
+		Conditions: []snapshot.Condition{{Type: "Complete", Status: "True"}},
+	}}}
+	if got := findByDetector(Diagnose(s), "job-failed"); len(got) != 0 {
+		t.Errorf("want no findings for a completed job, got %+v", got)
+	}
+}
+
+func TestCronJobSuspended(t *testing.T) {
+	s := &snapshot.Snapshot{CronJobs: []snapshot.CronJob{{
+		Name: "cleanup", Namespace: "batch", Schedule: "0 2 * * *", Suspend: true, LastScheduleTime: "2026-11-10T02:00:00Z",
+	}}}
+	got := findByDetector(Diagnose(s), "cronjob-suspended")
+	if len(got) != 1 || got[0].Severity != SeverityMedium || got[0].Object != "CronJob batch/cleanup" {
+		t.Fatalf("want 1 medium cronjob-suspended finding, got %+v", got)
+	}
+	if got := findByDetector(Diagnose(s), "cronjob-never-ran"); len(got) != 0 {
+		t.Errorf("suspended cronjob should not also be flagged as never ran, got %+v", got)
+	}
+}
+
+func TestCronJobNeverRan(t *testing.T) {
+	s := &snapshot.Snapshot{CronJobs: []snapshot.CronJob{{
+		Name: "hourly-sync", Namespace: "shop", Schedule: "0 * * * *",
+	}}}
+	got := findByDetector(Diagnose(s), "cronjob-never-ran")
+	if len(got) != 1 || got[0].Severity != SeverityMedium {
+		t.Fatalf("want 1 medium cronjob-never-ran finding, got %+v", got)
+	}
+}
+
+func TestCronJobThatRanIsClean(t *testing.T) {
+	s := &snapshot.Snapshot{CronJobs: []snapshot.CronJob{{
+		Name: "cleanup", Namespace: "batch", Schedule: "0 2 * * *", LastScheduleTime: "2026-11-13T02:00:00Z", LastSuccessfulTime: "2026-11-13T02:01:00Z",
+	}}}
+	findings := Diagnose(s)
+	if len(findings) != 0 {
+		t.Errorf("want no findings, got %+v", findings)
+	}
+}

@@ -17,6 +17,8 @@ type Snapshot struct {
 	Deployments []Deployment `json:"deployments"`
 	Nodes       []Node       `json:"nodes"`
 	Events      []Event      `json:"events"`
+	Jobs        []Job        `json:"jobs,omitempty"`
+	CronJobs    []CronJob    `json:"cronJobs,omitempty"`
 }
 
 type Pod struct {
@@ -79,6 +81,26 @@ type Deployment struct {
 	Conditions        []Condition `json:"conditions,omitempty"`
 }
 
+type Job struct {
+	Name        string      `json:"name"`
+	Namespace   string      `json:"namespace"`
+	Completions int         `json:"completions,omitempty"`
+	Active      int         `json:"active"`
+	Succeeded   int         `json:"succeeded"`
+	Failed      int         `json:"failed"`
+	Conditions  []Condition `json:"conditions,omitempty"`
+}
+
+type CronJob struct {
+	Name               string `json:"name"`
+	Namespace          string `json:"namespace"`
+	Schedule           string `json:"schedule,omitempty"`
+	Suspend            bool   `json:"suspend,omitempty"`
+	LastScheduleTime   string `json:"lastScheduleTime,omitempty"`
+	LastSuccessfulTime string `json:"lastSuccessfulTime,omitempty"`
+	Active             int    `json:"active"`
+}
+
 type Node struct {
 	Name       string      `json:"name"`
 	Conditions []Condition `json:"conditions,omitempty"`
@@ -114,6 +136,14 @@ func (p Pod) Ref() string {
 
 func (d Deployment) Ref() string {
 	return d.Namespace + "/" + d.Name
+}
+
+func (j Job) Ref() string {
+	return j.Namespace + "/" + j.Name
+}
+
+func (c CronJob) Ref() string {
+	return c.Namespace + "/" + c.Name
 }
 
 // Load reads and parses a snapshot file. Unknown fields are ignored on
