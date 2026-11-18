@@ -10,3 +10,9 @@ memory_threshold_percent: 80
 # keep the severity their detector assigns.
 severities:
   no-resource-limits: medium
+
+# Detectors can also be turned off, one line per detector. A detector
+# set to false, or not listed here, stays on. For example, to stop
+# reporting containers without resource limits at all, add:
+# disabled_detectors:
+#   no-resource-limits: true

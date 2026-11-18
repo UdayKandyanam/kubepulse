@@ -13,6 +13,7 @@ import (
 type Config struct {
 	MemoryThresholdPercent float64
 	SeverityOverrides      map[string]Severity
+	DisabledDetectors      map[string]bool
 }
 
 // DefaultMemoryThresholdPercent is the memory usage percent that the
@@ -26,7 +27,13 @@ func DefaultConfig() Config {
 	return Config{
 		MemoryThresholdPercent: DefaultMemoryThresholdPercent,
 		SeverityOverrides:      map[string]Severity{},
+		DisabledDetectors:      map[string]bool{},
 	}
+}
+
+// IsDisabled reports whether a detector is turned off in this config.
+func (c Config) IsDisabled(detector string) bool {
+	return c.DisabledDetectors[detector]
 }
 
 // KnownDetectors lists every detector name a config file may name in
@@ -65,17 +72,20 @@ func isKnownDetector(name string) bool {
 //	severities:
 //	  crashloop: critical
 //	  no-resource-limits: medium
+//	disabled_detectors:
+//	  node-pressure: true
 //
 // Blank lines and lines starting with # are ignored. Unknown keys,
-// unknown detector names, bad severities, and a memory threshold
-// outside 1 to 100 are errors, with the line number named.
+// unknown detector names, bad severities, bad disabled values, and a
+// memory threshold outside 1 to 100 are errors, with the line number
+// named.
 func LoadConfig(path string) (Config, error) {
 	cfg := DefaultConfig()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
-	inSeverities := false
+	section := ""
 	lines := strings.Split(string(data), "\n")
 	for i, raw := range lines {
 		lineNo := i + 1
@@ -92,15 +102,21 @@ func LoadConfig(path string) (Config, error) {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 		if indented {
-			if !inSeverities {
-				return Config{}, fmt.Errorf("config line %d: indented entry %q is not under a severities block", lineNo, key)
-			}
-			if err := cfg.setSeverity(key, value); err != nil {
-				return Config{}, fmt.Errorf("config line %d: %w", lineNo, err)
+			switch section {
+			case "severities":
+				if err := cfg.setSeverity(key, value); err != nil {
+					return Config{}, fmt.Errorf("config line %d: %w", lineNo, err)
+				}
+			case "disabled_detectors":
+				if err := cfg.setDisabled(key, value); err != nil {
+					return Config{}, fmt.Errorf("config line %d: %w", lineNo, err)
+				}
+			default:
+				return Config{}, fmt.Errorf("config line %d: indented entry %q is not under a severities or disabled_detectors block", lineNo, key)
 			}
 			continue
 		}
-		inSeverities = false
+		section = ""
 		switch key {
 		case "memory_threshold_percent":
 			pct, err := strconv.ParseFloat(value, 64)
@@ -115,12 +131,38 @@ func LoadConfig(path string) (Config, error) {
 			if value != "" {
 				return Config{}, fmt.Errorf("config line %d: severities takes indented detector lines, not a value on the same line", lineNo)
 			}
-			inSeverities = true
+			section = "severities"
+		case "disabled_detectors":
+			if value != "" {
+				return Config{}, fmt.Errorf("config line %d: disabled_detectors takes indented detector lines, not a value on the same line", lineNo)
+			}
+			section = "disabled_detectors"
 		default:
-			return Config{}, fmt.Errorf("config line %d: unknown key %q (use memory_threshold_percent or severities)", lineNo, key)
+			return Config{}, fmt.Errorf("config line %d: unknown key %q (use memory_threshold_percent, severities, or disabled_detectors)", lineNo, key)
 		}
 	}
 	return cfg, nil
+}
+
+func (c *Config) setDisabled(detector, value string) error {
+	if !isKnownDetector(detector) {
+		return fmt.Errorf("unknown detector %q (known detectors: %s)", detector, strings.Join(KnownDetectors(), ", "))
+	}
+	switch value {
+	case "true":
+		if c.DisabledDetectors == nil {
+			c.DisabledDetectors = map[string]bool{}
+		}
+		c.DisabledDetectors[detector] = true
+	case "false":
+		if c.DisabledDetectors == nil {
+			c.DisabledDetectors = map[string]bool{}
+		}
+		c.DisabledDetectors[detector] = false
+	default:
+		return fmt.Errorf("detector %s: disabled value %q is not true or false", detector, value)
+	}
+	return nil
 }
 
 func (c *Config) setSeverity(detector, value string) error {

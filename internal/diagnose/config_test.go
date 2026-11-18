@@ -26,6 +26,9 @@ func TestDefaultConfig(t *testing.T) {
 	if len(cfg.SeverityOverrides) != 0 {
 		t.Errorf("default config should have no overrides, got %v", cfg.SeverityOverrides)
 	}
+	if len(cfg.DisabledDetectors) != 0 {
+		t.Errorf("default config should disable no detectors, got %v", cfg.DisabledDetectors)
+	}
 }
 
 func TestLoadConfigAppliesSettings(t *testing.T) {
@@ -50,21 +53,41 @@ func TestLoadConfigEmptyFileKeepsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.MemoryThresholdPercent != 90 || len(cfg.SeverityOverrides) != 0 {
+	if cfg.MemoryThresholdPercent != 90 || len(cfg.SeverityOverrides) != 0 || len(cfg.DisabledDetectors) != 0 {
 		t.Errorf("empty config should keep defaults, got %+v", cfg)
+	}
+}
+
+func TestLoadConfigDisabledDetectors(t *testing.T) {
+	path := writeConfig(t, "disabled_detectors:\n  no-resource-limits: true\n  node-pressure: false\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.IsDisabled("no-resource-limits") {
+		t.Errorf("no-resource-limits should be disabled, got %v", cfg.DisabledDetectors)
+	}
+	if cfg.IsDisabled("node-pressure") {
+		t.Errorf("node-pressure set to false should stay enabled, got %v", cfg.DisabledDetectors)
+	}
+	if cfg.IsDisabled("crashloop") {
+		t.Errorf("crashloop was not listed and should stay enabled, got %v", cfg.DisabledDetectors)
 	}
 }
 
 func TestLoadConfigRejectsBadFiles(t *testing.T) {
 	cases := map[string]string{
-		"unknown key":          "mem_threshold: 85\n",
-		"bad severity":         "severities:\n  crashloop: urgent\n",
-		"unknown detector":     "severities:\n  made-up-detector: high\n",
-		"threshold too high":   "memory_threshold_percent: 140\n",
-		"threshold zero":       "memory_threshold_percent: 0\n",
-		"threshold not number": "memory_threshold_percent: high\n",
-		"missing colon":        "memory_threshold_percent 85\n",
-		"stray indent":         "  crashloop: high\n",
+		"unknown key":               "mem_threshold: 85\n",
+		"bad severity":              "severities:\n  crashloop: urgent\n",
+		"unknown detector":          "severities:\n  made-up-detector: high\n",
+		"threshold too high":        "memory_threshold_percent: 140\n",
+		"threshold zero":            "memory_threshold_percent: 0\n",
+		"threshold not number":      "memory_threshold_percent: high\n",
+		"missing colon":             "memory_threshold_percent 85\n",
+		"stray indent":              "  crashloop: high\n",
+		"disabled unknown detector": "disabled_detectors:\n  made-up-detector: true\n",
+		"disabled bad value":        "disabled_detectors:\n  crashloop: yes\n",
+		"disabled inline value":     "disabled_detectors: crashloop\n",
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -133,6 +156,45 @@ func TestConfigSeverityOverrideResorts(t *testing.T) {
 	}
 	if !ShouldFail(got, SeverityHigh) {
 		t.Error("an overridden critical finding should fail a high threshold")
+	}
+}
+
+func TestConfigDisablesDetector(t *testing.T) {
+	s := &snapshot.Snapshot{
+		Pods: []snapshot.Pod{{
+			Name: "debug-1", Namespace: "tools", Phase: "Running",
+			Containers: []snapshot.Container{{Name: "shell"}},
+		}},
+		Nodes: []snapshot.Node{{
+			Name:       "node-02",
+			Conditions: []snapshot.Condition{{Type: "MemoryPressure", Status: "True", Message: "System memory is low"}},
+		}},
+	}
+	if got := Diagnose(s); len(got) != 2 {
+		t.Fatalf("default config should report both findings, got %+v", got)
+	}
+	cfg := DefaultConfig()
+	cfg.DisabledDetectors["no-resource-limits"] = true
+	got := DiagnoseWithConfig(s, cfg)
+	if len(got) != 1 || got[0].Detector != "node-pressure" {
+		t.Fatalf("disabling no-resource-limits should leave only node-pressure, got %+v", got)
+	}
+	cfg.DisabledDetectors["node-pressure"] = true
+	if got := DiagnoseWithConfig(s, cfg); len(got) != 0 {
+		t.Errorf("disabling both detectors should leave no findings, got %+v", got)
+	}
+}
+
+func TestConfigDisabledFindingDoesNotFail(t *testing.T) {
+	s := &snapshot.Snapshot{Nodes: []snapshot.Node{{
+		Name:       "node-02",
+		Conditions: []snapshot.Condition{{Type: "MemoryPressure", Status: "True", Message: "System memory is low"}},
+	}}}
+	cfg := DefaultConfig()
+	cfg.DisabledDetectors["node-pressure"] = true
+	got := DiagnoseWithConfig(s, cfg)
+	if ShouldFail(got, SeverityLow) {
+		t.Errorf("a disabled critical finding should not fail any threshold, got %+v", got)
 	}
 }
 

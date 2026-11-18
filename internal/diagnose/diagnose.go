@@ -69,9 +69,10 @@ func Diagnose(s *snapshot.Snapshot) []Finding {
 }
 
 // DiagnoseWithConfig runs every detector with the given config. The
-// config sets the memory threshold the memory detector uses, and any
+// config sets the memory threshold the memory detector uses, any
 // severity override replaces the severity a detector assigned before
-// the findings are sorted.
+// the findings are sorted, and a detector listed as disabled in the
+// config contributes no findings at all.
 func DiagnoseWithConfig(s *snapshot.Snapshot, cfg Config) []Finding {
 	var findings []Finding
 	findings = append(findings, detectContainerStates(s)...)
@@ -82,13 +83,18 @@ func DiagnoseWithConfig(s *snapshot.Snapshot, cfg Config) []Finding {
 	findings = append(findings, detectNodePressure(s)...)
 	findings = append(findings, detectJobs(s)...)
 	findings = append(findings, detectCronJobs(s)...)
-	for i := range findings {
-		if sev, ok := cfg.SeverityOverrides[findings[i].Detector]; ok {
-			findings[i].Severity = sev
+	var kept []Finding
+	for _, f := range findings {
+		if cfg.IsDisabled(f.Detector) {
+			continue
 		}
+		if sev, ok := cfg.SeverityOverrides[f.Detector]; ok {
+			f.Severity = sev
+		}
+		kept = append(kept, f)
 	}
-	sortFindings(findings)
-	return findings
+	sortFindings(kept)
+	return kept
 }
 
 func sortFindings(findings []Finding) {

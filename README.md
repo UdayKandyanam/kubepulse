@@ -138,7 +138,7 @@ Run the same pair in reverse and the 12 findings land under RESOLVED instead. Th
 
 ## Tune thresholds with a config file
 
-My defaults will not fit every cluster. A config file changes two things: the percent of its memory limit at which a container gets flagged, and the severity any detector reports. Both `diagnose` and `diff` take one with `--config`.
+My defaults will not fit every cluster. A config file changes three things: the percent of its memory limit at which a container gets flagged, the severity any detector reports, and whether a detector runs at all. Both `diagnose` and `diff` take one with `--config`.
 
 ```yaml
 # examples/thresholds.yaml
@@ -173,6 +173,22 @@ MEDIUM (5)
 ```
 
 That last finding is the same pod the default report puts under LOW (1). Overrides apply before sorting and before the `--fail-on` check, so raising a detector to critical makes `--fail-on high` exit 1 on it as well.
+
+A detector can also be turned off. That is the right call when a team has already accepted a finding class and the noise is hiding new problems:
+
+```yaml
+disabled_detectors:
+  no-resource-limits: true
+```
+
+A detector set to `false`, or not listed, stays on. Unknown detector names and values other than `true` or `false` are errors with the line number named, the same as the other settings. Running the broken example with only the file above gives:
+
+```text
+KubePulse report for demo-cluster
+11 findings: 2 critical, 5 high, 4 medium, 0 low
+```
+
+The low finding is gone, not moved: a disabled detector contributes no findings, so it cannot trigger `--fail-on` either. In `diff`, disabling a detector removes it from both sides, so it shows up as neither new nor resolved.
 
 ## Snapshot format
 
@@ -232,7 +248,7 @@ Field notes:
 
 ## Detectors
 
-Each detector is a small function over the snapshot, with its own tests. The severities below are the defaults: a config file can override any of them, as the config section above describes. Node pressure defaults to critical because an unhealthy node puts every pod on it at risk.
+Each detector is a small function over the snapshot, with its own tests. The severities below are the defaults: a config file can override any of them, or turn a detector off, as the config section above describes. Node pressure defaults to critical because an unhealthy node puts every pod on it at risk.
 
 * `crashloop` (high): a container waiting with reason CrashLoopBackOff.
 * `oomkilled` (high): a container whose last terminated state has reason OOMKilled.
@@ -256,7 +272,7 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 
 * The report is only as good as the snapshot. Stale input gives a confident looking report about a cluster that has already moved on.
 * The memory detector needs usage numbers in the snapshot. Without `metrics` fields it stays silent rather than guessing.
-* The config file covers the memory threshold and severity overrides only. It does not turn detectors off, and its parser accepts the two settings shown in the config section, not general YAML: no anchors, no inline maps, no lists.
+* The config file covers the memory threshold, severity overrides, and disabled detectors only. Its parser accepts the three settings shown in the config section, not general YAML: no anchors, no inline maps, no lists.
 * KubePulse does not read logs, so for a crashloop it can point at the container and the restart count, not at the stack trace.
 * Diff matches findings on their summary text. A finding whose summary changes between snapshots, a crashloop restart count climbing from 9 to 14, shows up as one resolved and one new finding rather than one unchanged finding. I know about this one and accept it for now: the alternative is matching on less, and calling two different problems the same finding is worse.
 * The cronjob never ran detector cannot tell a cronjob created a minute ago from one that has been broken for a week: both have an empty `lastScheduleTime`. I flag both and let the next step sort it out.
