@@ -36,6 +36,60 @@ func (c Config) IsDisabled(detector string) bool {
 	return c.DisabledDetectors[detector]
 }
 
+// DefaultSeverity returns the severity a detector assigns when no
+// override is in place. The second result is false for a name that
+// is not a known detector.
+func DefaultSeverity(detector string) (Severity, bool) {
+	switch detector {
+	case "crashloop", "image-pull", "job-failed", "oomkilled", "rollout-stuck":
+		return SeverityHigh, true
+	case "cronjob-never-ran", "cronjob-suspended", "memory-close-to-limit", "unschedulable":
+		return SeverityMedium, true
+	case "no-resource-limits":
+		return SeverityLow, true
+	case "node-pressure":
+		return SeverityCritical, true
+	}
+	return "", false
+}
+
+// EffectiveSeverity returns the severity a detector will report
+// under this config: the override when one is set, otherwise the
+// default. The second result is false for an unknown detector.
+func (c Config) EffectiveSeverity(detector string) (Severity, bool) {
+	if sev, ok := c.SeverityOverrides[detector]; ok {
+		return sev, true
+	}
+	return DefaultSeverity(detector)
+}
+
+// Describe returns the effective config as plain text, one detector
+// per line in KnownDetectors order. It shows the memory threshold,
+// the severity each detector will report, whether an override set
+// that severity, and whether the detector is disabled. I use it for
+// the print config flag, so a run can show the settings it used
+// without the reader having to merge the file and the defaults by
+// hand.
+func (c Config) Describe() string {
+	var b strings.Builder
+	b.WriteString("Effective config\n")
+	fmt.Fprintf(&b, "memory_threshold_percent: %s\n", strconv.FormatFloat(c.MemoryThresholdPercent, 'g', -1, 64))
+	b.WriteString("detectors:\n")
+	for _, name := range KnownDetectors() {
+		sev, _ := c.EffectiveSeverity(name)
+		state := "enabled"
+		if c.IsDisabled(name) {
+			state = "disabled"
+		}
+		marker := ""
+		if _, ok := c.SeverityOverrides[name]; ok {
+			marker = " (override)"
+		}
+		fmt.Fprintf(&b, "  %s: %s%s, %s\n", name, sev, marker, state)
+	}
+	return b.String()
+}
+
 // KnownDetectors lists every detector name a config file may name in
 // a severity override.
 func KnownDetectors() []string {

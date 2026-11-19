@@ -45,8 +45,8 @@ func run(args []string) int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  kubepulse diagnose [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] <snapshot.json>")
-	fmt.Fprintln(os.Stderr, "  kubepulse diff [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] <before.json> <after.json>")
+	fmt.Fprintln(os.Stderr, "  kubepulse diagnose [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] [--print-config] <snapshot.json>")
+	fmt.Fprintln(os.Stderr, "  kubepulse diff [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] [--print-config] <before.json> <after.json>")
 	fmt.Fprintln(os.Stderr, "  kubepulse collect [--kubeconfig <path>] [--namespace <ns>] [--output <file>]")
 }
 
@@ -65,8 +65,22 @@ func runDiagnose(args []string) int {
 	format := fs.String("format", "text", "output format: text or json")
 	failOn := fs.String("fail-on", "", "exit with code 1 when a finding at or above this severity exists")
 	configPath := fs.String("config", "", "config file with detector thresholds and severity overrides")
+	printConfig := fs.Bool("print-config", false, "print the effective config and exit, without reading a snapshot")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *printConfig {
+		if fs.NArg() > 1 {
+			usage()
+			return 2
+		}
+		cfg, err := loadConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
+			return 2
+		}
+		fmt.Fprint(os.Stdout, cfg.Describe())
+		return 0
 	}
 	if fs.NArg() != 1 {
 		usage()
@@ -120,8 +134,22 @@ func runDiff(args []string) int {
 	format := fs.String("format", "text", "output format: text or json")
 	failOn := fs.String("fail-on", "", "exit with code 1 when a new finding at or above this severity exists")
 	configPath := fs.String("config", "", "config file with detector thresholds and severity overrides")
+	printConfig := fs.Bool("print-config", false, "print the effective config and exit, without reading snapshots")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *printConfig {
+		if fs.NArg() != 0 && fs.NArg() != 2 {
+			usage()
+			return 2
+		}
+		cfg, err := loadConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
+			return 2
+		}
+		fmt.Fprint(os.Stdout, cfg.Describe())
+		return 0
 	}
 	if fs.NArg() != 2 {
 		usage()

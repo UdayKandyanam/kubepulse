@@ -198,6 +198,65 @@ func TestConfigDisabledFindingDoesNotFail(t *testing.T) {
 	}
 }
 
+func TestDescribeDefaultConfig(t *testing.T) {
+	got := DefaultConfig().Describe()
+	want := "Effective config\n" +
+		"memory_threshold_percent: 90\n" +
+		"detectors:\n" +
+		"  crashloop: high, enabled\n" +
+		"  cronjob-never-ran: medium, enabled\n" +
+		"  cronjob-suspended: medium, enabled\n" +
+		"  image-pull: high, enabled\n" +
+		"  job-failed: high, enabled\n" +
+		"  memory-close-to-limit: medium, enabled\n" +
+		"  no-resource-limits: low, enabled\n" +
+		"  node-pressure: critical, enabled\n" +
+		"  oomkilled: high, enabled\n" +
+		"  rollout-stuck: high, enabled\n" +
+		"  unschedulable: medium, enabled\n"
+	if got != want {
+		t.Errorf("default describe should list every detector with its default severity\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDescribeShowsOverrideAndDisabled(t *testing.T) {
+	cfg, err := LoadConfig(writeConfig(t, "memory_threshold_percent: 80\nseverities:\n  no-resource-limits: medium\ndisabled_detectors:\n  node-pressure: true\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got := cfg.Describe()
+	for _, line := range []string{
+		"memory_threshold_percent: 80\n",
+		"  no-resource-limits: medium (override), enabled\n",
+		"  node-pressure: critical, disabled\n",
+		"  crashloop: high, enabled\n",
+	} {
+		if !strings.Contains(got, line) {
+			t.Errorf("describe should contain %q, got:\n%s", line, got)
+		}
+	}
+}
+
+func TestEffectiveSeverity(t *testing.T) {
+	cfg := DefaultConfig()
+	if sev, ok := cfg.EffectiveSeverity("no-resource-limits"); !ok || sev != SeverityLow {
+		t.Errorf("no-resource-limits should default to low, got %q, %v", sev, ok)
+	}
+	if sev, ok := cfg.EffectiveSeverity("node-pressure"); !ok || sev != SeverityCritical {
+		t.Errorf("node-pressure should default to critical, got %q, %v", sev, ok)
+	}
+	cfg.SeverityOverrides["crashloop"] = SeverityCritical
+	if sev, ok := cfg.EffectiveSeverity("crashloop"); !ok || sev != SeverityCritical {
+		t.Errorf("crashloop override should win, got %q, %v", sev, ok)
+	}
+	if _, ok := cfg.EffectiveSeverity("made-up-detector"); ok {
+		t.Error("an unknown detector should not have an effective severity")
+	}
+	if _, ok := DefaultSeverity("made-up-detector"); ok {
+		t.Error("an unknown detector should not have a default severity")
+	}
+}
+
 func TestLoadConfigErrorNamesLine(t *testing.T) {
 	_, err := LoadConfig(writeConfig(t, "memory_threshold_percent: 85\nseverities:\n  crashloop: urgent\n"))
 	if err == nil || !strings.Contains(err.Error(), "line 3") {

@@ -30,6 +30,7 @@ That produces a `kubepulse` binary in the current directory. `make test` runs th
 ./kubepulse diagnose --format json examples/broken.json
 ./kubepulse diagnose --fail-on high examples/broken.json; echo $?
 ./kubepulse diagnose --config examples/thresholds.yaml examples/broken.json
+./kubepulse diagnose --print-config --config examples/thresholds.yaml
 ./kubepulse diff examples/healthy.json examples/broken.json
 ./kubepulse collect --output snapshot.json
 ```
@@ -189,6 +190,28 @@ KubePulse report for demo-cluster
 ```
 
 The low finding is gone, not moved: a disabled detector contributes no findings, so it cannot trigger `--fail-on` either. In `diff`, disabling a detector removes it from both sides, so it shows up as neither new nor resolved.
+
+To see the settings a run will use, add `--print-config`. It prints the effective config and exits without reading a snapshot, so I can check the merged result of a file and the defaults before I trust a report. Both `diagnose` and `diff` take it. With the example file it prints:
+
+```text
+$ ./kubepulse diagnose --print-config --config examples/thresholds.yaml
+Effective config
+memory_threshold_percent: 80
+detectors:
+  crashloop: high, enabled
+  cronjob-never-ran: medium, enabled
+  cronjob-suspended: medium, enabled
+  image-pull: high, enabled
+  job-failed: high, enabled
+  memory-close-to-limit: medium, enabled
+  no-resource-limits: medium (override), enabled
+  node-pressure: critical, enabled
+  oomkilled: high, enabled
+  rollout-stuck: high, enabled
+  unschedulable: medium, enabled
+```
+
+Without a `--config` file the same command lists the defaults: memory threshold 90, every detector at the severity in the detector list below, and every detector enabled. A bad config file is still an error here, with the line number named, instead of a listing of defaults I did not ask for.
 
 ## Snapshot format
 
