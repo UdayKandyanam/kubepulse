@@ -1,9 +1,9 @@
 // Package collect builds a snapshot from a live cluster by running
-// kubectl with read only verbs: get pods, deployments, nodes, and
-// events, plus a raw get against the metrics API for pod usage. It
-// never changes anything in the cluster. Convert is the pure part:
-// it turns the kubectl JSON into the snapshot type, and the tests
-// drive it with fixture files.
+// kubectl with read only verbs: get pods, deployments, nodes, events,
+// jobs, and cronjobs, plus a raw get against the metrics API for pod
+// usage. It never changes anything in the cluster. Convert is the
+// pure part: it turns the kubectl JSON into the snapshot type, and
+// the tests drive it with fixture files.
 package collect
 
 import (
@@ -94,6 +94,14 @@ func Collect(r Runner, opts Options) (*snapshot.Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kubectl get events: %w", err)
 	}
+	jobs, err := get("jobs", true)
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get jobs: %w", err)
+	}
+	cronjobs, err := get("cronjobs", true)
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get cronjobs: %w", err)
+	}
 
 	// Metrics are optional. Clusters without metrics-server answer
 	// this with an error, and a snapshot without usage numbers is
@@ -108,7 +116,7 @@ func Collect(r Runner, opts Options) (*snapshot.Snapshot, error) {
 	}
 
 	capturedAt := time.Now().UTC().Format(time.RFC3339)
-	return Convert(cluster, capturedAt, pods, deployments, nodes, events, top)
+	return Convert(cluster, capturedAt, pods, deployments, nodes, events, jobs, cronjobs, top)
 }
 
 // scopeArgs returns the namespace arguments for a namespaced get:
@@ -121,8 +129,12 @@ func scopeArgs(namespace string) []string {
 }
 
 // Convert turns kubectl JSON output into a snapshot. The top argument
-// is the metrics API pod list and may be nil.
-func Convert(cluster, capturedAt string, podsJSON, deploymentsJSON, nodesJSON, eventsJSON, topJSON []byte) (*snapshot.Snapshot, error) {
+// is the metrics API pod list and may be nil. The jobs and cronjobs
+// arguments may be nil or empty, for callers that do not collect
+// them: the snapshot then carries no jobs or cronjobs, and the job
+// detectors stay silent, the same as a hand written snapshot without
+// those fields.
+func Convert(cluster, capturedAt string, podsJSON, deploymentsJSON, nodesJSON, eventsJSON, jobsJSON, cronJobsJSON, topJSON []byte) (*snapshot.Snapshot, error) {
 	usage, err := parseUsage(topJSON)
 	if err != nil {
 		return nil, err
@@ -143,6 +155,18 @@ func Convert(cluster, capturedAt string, podsJSON, deploymentsJSON, nodesJSON, e
 	var eventList eventListJSON
 	if err := json.Unmarshal(eventsJSON, &eventList); err != nil {
 		return nil, fmt.Errorf("parse kubectl events output: %w", err)
+	}
+	var jobList jobListJSON
+	if len(jobsJSON) > 0 {
+		if err := json.Unmarshal(jobsJSON, &jobList); err != nil {
+			return nil, fmt.Errorf("parse kubectl jobs output: %w", err)
+		}
+	}
+	var cronJobList cronJobListJSON
+	if len(cronJobsJSON) > 0 {
+		if err := json.Unmarshal(cronJobsJSON, &cronJobList); err != nil {
+			return nil, fmt.Errorf("parse kubectl cronjobs output: %w", err)
+		}
 	}
 
 	snap := &snapshot.Snapshot{
@@ -185,6 +209,30 @@ func Convert(cluster, capturedAt string, podsJSON, deploymentsJSON, nodesJSON, e
 			Message:  item.Message,
 			Count:    item.Count,
 			LastSeen: lastSeen,
+		})
+	}
+	for _, item := range jobList.Items {
+		snap.Jobs = append(snap.Jobs, snapshot.Job{
+			Name:        item.Metadata.Name,
+			Namespace:   item.Metadata.Namespace,
+			Completions: item.Spec.Completions,
+			Active:      item.Status.Active,
+			Succeeded:   item.Status.Succeeded,
+			Failed:      item.Status.Failed,
+			Conditions:  item.Status.Conditions,
+		})
+	}
+	for _, item := range cronJobList.Items {
+		// The API lists active jobs as object references, the
+		// snapshot stores only how many there are.
+		snap.CronJobs = append(snap.CronJobs, snapshot.CronJob{
+			Name:               item.Metadata.Name,
+			Namespace:          item.Metadata.Namespace,
+			Schedule:           item.Spec.Schedule,
+			Suspend:            item.Spec.Suspend,
+			LastScheduleTime:   item.Status.LastScheduleTime,
+			LastSuccessfulTime: item.Status.LastSuccessfulTime,
+			Active:             len(item.Status.Active),
 		})
 	}
 	return snap, nil

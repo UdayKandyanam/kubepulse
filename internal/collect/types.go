@@ -83,6 +83,39 @@ type eventListJSON struct {
 	} `json:"items"`
 }
 
+type jobListJSON struct {
+	Items []struct {
+		Metadata metadataJSON `json:"metadata"`
+		Spec     struct {
+			Completions int `json:"completions,omitempty"`
+		} `json:"spec"`
+		Status struct {
+			Active     int                  `json:"active,omitempty"`
+			Succeeded  int                  `json:"succeeded,omitempty"`
+			Failed     int                  `json:"failed,omitempty"`
+			Conditions []snapshot.Condition `json:"conditions,omitempty"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type cronJobListJSON struct {
+	Items []struct {
+		Metadata metadataJSON `json:"metadata"`
+		Spec     struct {
+			Schedule string `json:"schedule,omitempty"`
+			Suspend  bool   `json:"suspend,omitempty"`
+		} `json:"spec"`
+		Status struct {
+			LastScheduleTime   string `json:"lastScheduleTime,omitempty"`
+			LastSuccessfulTime string `json:"lastSuccessfulTime,omitempty"`
+			Active             []struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace,omitempty"`
+			} `json:"active,omitempty"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
 type topListJSON struct {
 	Items []struct {
 		Metadata   metadataJSON `json:"metadata"`

@@ -23,7 +23,8 @@ func convertFixtures(t *testing.T) *snapshot.Snapshot {
 	t.Helper()
 	snap, err := Convert("demo-cluster", "2026-11-13T14:02:00Z",
 		fixture(t, "pods.json"), fixture(t, "deployments.json"),
-		fixture(t, "nodes.json"), fixture(t, "events.json"), fixture(t, "top.json"))
+		fixture(t, "nodes.json"), fixture(t, "events.json"),
+		fixture(t, "jobs.json"), fixture(t, "cronjobs.json"), fixture(t, "top.json"))
 	if err != nil {
 		t.Fatalf("Convert: %v", err)
 	}
@@ -91,6 +92,37 @@ func TestConvertDeploymentsNodesEvents(t *testing.T) {
 	}
 }
 
+func TestConvertJobsCronJobs(t *testing.T) {
+	snap := convertFixtures(t)
+	if len(snap.Jobs) != 2 {
+		t.Fatalf("want 2 jobs, got %d", len(snap.Jobs))
+	}
+	failed := snap.Jobs[0]
+	if failed.Name != "nightly-report" || failed.Namespace != "batch" ||
+		failed.Completions != 1 || failed.Failed != 3 || failed.Succeeded != 0 || failed.Active != 0 {
+		t.Errorf("failed job converted wrong: %+v", failed)
+	}
+	if len(failed.Conditions) != 1 || failed.Conditions[0].Type != "Failed" || failed.Conditions[0].Reason != "BackoffLimitExceeded" {
+		t.Errorf("failed job conditions wrong: %+v", failed.Conditions)
+	}
+	complete := snap.Jobs[1]
+	if complete.Name != "data-load" || complete.Succeeded != 1 {
+		t.Errorf("complete job converted wrong: %+v", complete)
+	}
+	if len(snap.CronJobs) != 3 {
+		t.Fatalf("want 3 cronjobs, got %d", len(snap.CronJobs))
+	}
+	cleanup := snap.CronJobs[0]
+	if cleanup.Name != "cleanup" || cleanup.Schedule != "0 2 * * *" || !cleanup.Suspend ||
+		cleanup.LastScheduleTime != "2026-11-10T02:00:00Z" || cleanup.LastSuccessfulTime != "2026-11-09T02:01:00Z" || cleanup.Active != 0 {
+		t.Errorf("suspended cronjob converted wrong: %+v", cleanup)
+	}
+	rollup := snap.CronJobs[2]
+	if rollup.Name != "metrics-rollup" || rollup.Active != 1 {
+		t.Errorf("cronjob active should be the count of active job references, got %+v", rollup)
+	}
+}
+
 func TestConvertedSnapshotDiagnoses(t *testing.T) {
 	snap := convertFixtures(t)
 	findings := diagnose.Diagnose(snap)
@@ -107,12 +139,22 @@ func TestConvertedSnapshotDiagnoses(t *testing.T) {
 	if counts["node-pressure"] != 1 {
 		t.Errorf("want 1 node pressure finding from the converted snapshot, got %v", counts)
 	}
+	if counts["job-failed"] != 1 {
+		t.Errorf("want 1 job failed finding from the converted snapshot, got %v", counts)
+	}
+	if counts["cronjob-suspended"] != 1 {
+		t.Errorf("want 1 cronjob suspended finding from the converted snapshot, got %v", counts)
+	}
+	if counts["cronjob-never-ran"] != 1 {
+		t.Errorf("want 1 cronjob never ran finding from the converted snapshot, got %v", counts)
+	}
 }
 
 func TestConvertWithoutMetrics(t *testing.T) {
 	snap, err := Convert("demo-cluster", "2026-11-13T14:02:00Z",
 		fixture(t, "pods.json"), fixture(t, "deployments.json"),
-		fixture(t, "nodes.json"), fixture(t, "events.json"), nil)
+		fixture(t, "nodes.json"), fixture(t, "events.json"),
+		fixture(t, "jobs.json"), fixture(t, "cronjobs.json"), nil)
 	if err != nil {
 		t.Fatalf("Convert without metrics: %v", err)
 	}
@@ -121,11 +163,33 @@ func TestConvertWithoutMetrics(t *testing.T) {
 	}
 }
 
+func TestConvertWithoutJobsCronJobs(t *testing.T) {
+	snap, err := Convert("demo-cluster", "2026-11-13T14:02:00Z",
+		fixture(t, "pods.json"), fixture(t, "deployments.json"),
+		fixture(t, "nodes.json"), fixture(t, "events.json"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Convert without jobs and cronjobs: %v", err)
+	}
+	if len(snap.Jobs) != 0 || len(snap.CronJobs) != 0 {
+		t.Errorf("jobs and cronjobs should be empty when not collected, got %d jobs and %d cronjobs", len(snap.Jobs), len(snap.CronJobs))
+	}
+}
+
 func TestConvertRejectsBadJSON(t *testing.T) {
 	if _, err := Convert("demo-cluster", "now", []byte("{not json"),
 		fixture(t, "deployments.json"), fixture(t, "nodes.json"),
-		fixture(t, "events.json"), nil); err == nil {
+		fixture(t, "events.json"), nil, nil, nil); err == nil {
 		t.Error("bad pods JSON should produce an error")
+	}
+	if _, err := Convert("demo-cluster", "now", fixture(t, "pods.json"),
+		fixture(t, "deployments.json"), fixture(t, "nodes.json"),
+		fixture(t, "events.json"), []byte("{not json"), nil, nil); err == nil {
+		t.Error("bad jobs JSON should produce an error")
+	}
+	if _, err := Convert("demo-cluster", "now", fixture(t, "pods.json"),
+		fixture(t, "deployments.json"), fixture(t, "nodes.json"),
+		fixture(t, "events.json"), nil, []byte("{not json"), nil); err == nil {
+		t.Error("bad cronjobs JSON should produce an error")
 	}
 }
 
@@ -155,6 +219,10 @@ func (f *fakeRunner) Run(args ...string) ([]byte, error) {
 		return fixtureData("nodes.json")
 	case strings.Contains(joined, "get events"):
 		return fixtureData("events.json")
+	case strings.Contains(joined, "get jobs"):
+		return fixtureData("jobs.json")
+	case strings.Contains(joined, "get cronjobs"):
+		return fixtureData("cronjobs.json")
 	}
 	return nil, fmt.Errorf("unexpected kubectl call: %s", joined)
 }
@@ -184,6 +252,9 @@ func TestCollectUsesReadOnlyGets(t *testing.T) {
 	}
 	if len(snap.Pods) != 2 {
 		t.Errorf("want 2 pods from the fake cluster, got %d", len(snap.Pods))
+	}
+	if len(snap.Jobs) != 2 || len(snap.CronJobs) != 3 {
+		t.Errorf("want 2 jobs and 3 cronjobs from the fake cluster, got %d jobs and %d cronjobs", len(snap.Jobs), len(snap.CronJobs))
 	}
 	for _, call := range runner.calls {
 		joined := strings.Join(call, " ")
