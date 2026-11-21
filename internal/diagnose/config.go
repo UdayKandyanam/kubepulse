@@ -43,7 +43,7 @@ func DefaultSeverity(detector string) (Severity, bool) {
 	switch detector {
 	case "crashloop", "image-pull", "job-failed", "oomkilled", "rollout-stuck":
 		return SeverityHigh, true
-	case "cronjob-never-ran", "cronjob-suspended", "memory-close-to-limit", "unschedulable":
+	case "cronjob-never-ran", "cronjob-stale", "cronjob-suspended", "memory-close-to-limit", "unschedulable":
 		return SeverityMedium, true
 	case "no-resource-limits":
 		return SeverityLow, true
@@ -96,6 +96,7 @@ func KnownDetectors() []string {
 	return []string{
 		"crashloop",
 		"cronjob-never-ran",
+		"cronjob-stale",
 		"cronjob-suspended",
 		"image-pull",
 		"job-failed",

@@ -277,6 +277,65 @@ func TestCronJobNeverRan(t *testing.T) {
 	}
 }
 
+func TestCronJobStaleHourly(t *testing.T) {
+	s := &snapshot.Snapshot{
+		CapturedAt: "2026-11-13T14:02:00Z",
+		CronJobs: []snapshot.CronJob{{
+			Name: "hourly-sync", Namespace: "shop", Schedule: "0 * * * *", LastScheduleTime: "2026-11-13T08:00:00Z",
+		}},
+	}
+	got := findByDetector(Diagnose(s), "cronjob-stale")
+	if len(got) != 1 || got[0].Severity != SeverityMedium || got[0].Object != "CronJob shop/hourly-sync" {
+		t.Fatalf("want 1 medium cronjob-stale finding, got %+v", got)
+	}
+}
+
+func TestCronJobStaleDaily(t *testing.T) {
+	s := &snapshot.Snapshot{
+		CapturedAt: "2026-11-13T14:02:00Z",
+		CronJobs: []snapshot.CronJob{{
+			Name: "cleanup", Namespace: "batch", Schedule: "0 2 * * *", LastScheduleTime: "2026-11-10T02:00:00Z",
+		}},
+	}
+	got := findByDetector(Diagnose(s), "cronjob-stale")
+	if len(got) != 1 {
+		t.Fatalf("a daily cronjob last run 3 days ago should be stale, got %+v", got)
+	}
+}
+
+func TestCronJobRecentRunIsNotStale(t *testing.T) {
+	s := &snapshot.Snapshot{
+		CapturedAt: "2026-11-13T14:02:00Z",
+		CronJobs: []snapshot.CronJob{
+			{Name: "cleanup", Namespace: "batch", Schedule: "0 2 * * *", LastScheduleTime: "2026-11-13T02:00:00Z"},
+			{Name: "weekly-report", Namespace: "batch", Schedule: "0 9 * * 1", LastScheduleTime: "2026-11-09T09:00:00Z"},
+		},
+	}
+	if got := findByDetector(Diagnose(s), "cronjob-stale"); len(got) != 0 {
+		t.Errorf("daily run 12h ago and weekly run 4 days ago should not be stale, got %+v", got)
+	}
+}
+
+func TestCronJobStaleSkipsUnjudgeable(t *testing.T) {
+	s := &snapshot.Snapshot{
+		CapturedAt: "2026-11-13T14:02:00Z",
+		CronJobs: []snapshot.CronJob{
+			{Name: "paused", Namespace: "batch", Schedule: "0 * * * *", Suspend: true, LastScheduleTime: "2026-11-01T00:00:00Z"},
+			{Name: "odd", Namespace: "batch", Schedule: "not a schedule", LastScheduleTime: "2026-11-01T00:00:00Z"},
+			{Name: "bad-time", Namespace: "batch", Schedule: "0 * * * *", LastScheduleTime: "yesterday"},
+		},
+	}
+	if got := findByDetector(Diagnose(s), "cronjob-stale"); len(got) != 0 {
+		t.Errorf("suspended, unparseable, and bad time cronjobs should not be flagged stale, got %+v", got)
+	}
+	noCapture := &snapshot.Snapshot{CronJobs: []snapshot.CronJob{
+		{Name: "hourly-sync", Namespace: "shop", Schedule: "0 * * * *", LastScheduleTime: "2026-11-01T00:00:00Z"},
+	}}
+	if got := findByDetector(Diagnose(noCapture), "cronjob-stale"); len(got) != 0 {
+		t.Errorf("a snapshot with no capturedAt should not flag stale, got %+v", got)
+	}
+}
+
 func TestCronJobThatRanIsClean(t *testing.T) {
 	s := &snapshot.Snapshot{CronJobs: []snapshot.CronJob{{
 		Name: "cleanup", Namespace: "batch", Schedule: "0 2 * * *", LastScheduleTime: "2026-11-13T02:00:00Z", LastSuccessfulTime: "2026-11-13T02:01:00Z",

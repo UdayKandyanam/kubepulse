@@ -6,6 +6,9 @@ package diagnose
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/UdayKandyanam/kubepulse/internal/snapshot"
 )
@@ -368,9 +371,11 @@ func detectJobs(s *snapshot.Snapshot) []Finding {
 	return out
 }
 
-// detectCronJobs flags cronjobs that are suspended and cronjobs that
-// have never been scheduled. A suspended cronjob is not also flagged
-// as never ran: the suspension already explains the missing runs.
+// detectCronJobs flags cronjobs that are suspended, cronjobs that
+// have never been scheduled, and cronjobs that ran before but have
+// stopped running on schedule. A suspended cronjob is not also
+// flagged as never ran or stale: the suspension already explains
+// the missing runs.
 func detectCronJobs(s *snapshot.Snapshot) []Finding {
 	var out []Finding
 	for _, cj := range s.CronJobs {
@@ -405,9 +410,205 @@ func detectCronJobs(s *snapshot.Snapshot) []Finding {
 				Evidence: evidence,
 				NextStep: "Check that the cronjob is in the namespace I expect and that its schedule is valid. If it was just created, wait for the first scheduled time and check again.",
 			})
+			continue
+		}
+		if age, interval, ok := staleAge(s.CapturedAt, cj); ok {
+			out = append(out, Finding{
+				Severity: SeverityMedium,
+				Detector: "cronjob-stale",
+				Object:   "CronJob " + cj.Ref(),
+				Summary:  fmt.Sprintf("cronjob has not run on schedule, last run %s ago", formatDuration(age)),
+				Evidence: fmt.Sprintf("last scheduled at %s, snapshot captured at %s, schedule %q runs every %s", cj.LastScheduleTime, s.CapturedAt, cj.Schedule, formatDuration(interval)),
+				NextStep: "Check the cronjob controller and the job history for this cronjob. A run that stopped on schedule usually means the controller is down, the schedule stopped matching, or new jobs are being blocked.",
+			})
 		}
 	}
 	return out
+}
+
+// staleAge reports whether a cronjob has missed its schedule. It
+// returns the time since the last scheduled run and the interval
+// between scheduled runs. A cronjob counts as stale when the time
+// since its last run is more than twice the interval, so at least
+// one full scheduled run has been missed. Times or schedules that
+// cannot be parsed return ok as false: without them there is no
+// honest way to judge.
+func staleAge(capturedAt string, cj snapshot.CronJob) (time.Duration, time.Duration, bool) {
+	last, err := time.Parse(time.RFC3339, cj.LastScheduleTime)
+	if err != nil {
+		return 0, 0, false
+	}
+	captured, err := time.Parse(time.RFC3339, capturedAt)
+	if err != nil {
+		return 0, 0, false
+	}
+	interval, ok := scheduleInterval(cj.Schedule, last)
+	if !ok {
+		return 0, 0, false
+	}
+	age := captured.Sub(last)
+	if age <= 2*interval {
+		return 0, 0, false
+	}
+	return age, interval, true
+}
+
+// scheduleInterval returns the gap between the first two scheduled
+// times after from, by scanning forward minute by minute. Cron
+// schedules repeat at least once a year, so the scan stops after
+// 366 days.
+type cronSchedule struct {
+	fields  []map[int]bool
+	domStar bool
+	dowStar bool
+}
+
+func scheduleInterval(schedule string, from time.Time) (time.Duration, bool) {
+	parsed, ok := parseCron(schedule)
+	if !ok {
+		return 0, false
+	}
+	first, ok := nextCronTime(parsed, from)
+	if !ok {
+		return 0, false
+	}
+	second, ok := nextCronTime(parsed, first)
+	if !ok {
+		return 0, false
+	}
+	return second.Sub(first), true
+}
+
+func nextCronTime(schedule cronSchedule, from time.Time) (time.Time, bool) {
+	t := from.Truncate(time.Minute).Add(time.Minute)
+	limit := from.Add(366 * 24 * time.Hour)
+	for !t.After(limit) {
+		if cronMatches(schedule, t) {
+			return t, true
+		}
+		t = t.Add(time.Minute)
+	}
+	return time.Time{}, false
+}
+
+// parseCron parses a standard five field cron schedule. Each field
+// supports a star, a step such as */15, a single value, a range, and
+// comma separated lists of those. It returns one set of matching
+// values per field, in minute, hour, day of month, month, and day
+// of week order.
+func parseCron(schedule string) (cronSchedule, bool) {
+	parts := strings.Fields(schedule)
+	if len(parts) != 5 {
+		return cronSchedule{}, false
+	}
+	bounds := [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
+	fields := make([]map[int]bool, 5)
+	for i, part := range parts {
+		values, ok := parseCronField(part, bounds[i][0], bounds[i][1])
+		if !ok {
+			return cronSchedule{}, false
+		}
+		fields[i] = values
+	}
+	if fields[4][7] {
+		fields[4][0] = true
+		delete(fields[4], 7)
+	}
+	parsed := cronSchedule{
+		fields:  fields,
+		domStar: parts[2] == "*" || strings.HasPrefix(parts[2], "*/"),
+		dowStar: parts[4] == "*" || strings.HasPrefix(parts[4], "*/"),
+	}
+	return parsed, true
+}
+
+func parseCronField(field string, min, max int) (map[int]bool, bool) {
+	values := map[int]bool{}
+	for _, part := range strings.Split(field, ",") {
+		if part == "" {
+			return nil, false
+		}
+		base := part
+		step := 1
+		if slash := strings.Index(part, "/"); slash >= 0 {
+			base = part[:slash]
+			n, err := strconv.Atoi(part[slash+1:])
+			if err != nil || n < 1 {
+				return nil, false
+			}
+			step = n
+		}
+		lo, hi := min, max
+		if base != "*" {
+			if dash := strings.Index(base, "-"); dash >= 0 {
+				var err error
+				lo, err = strconv.Atoi(base[:dash])
+				if err != nil {
+					return nil, false
+				}
+				hi, err = strconv.Atoi(base[dash+1:])
+				if err != nil {
+					return nil, false
+				}
+			} else {
+				v, err := strconv.Atoi(base)
+				if err != nil {
+					return nil, false
+				}
+				lo, hi = v, v
+				if step != 1 {
+					hi = max
+				}
+			}
+		}
+		if lo < min || hi > max || lo > hi {
+			return nil, false
+		}
+		for v := lo; v <= hi; v += step {
+			values[v] = true
+		}
+	}
+	if len(values) == 0 {
+		return nil, false
+	}
+	return values, true
+}
+
+func cronMatches(schedule cronSchedule, t time.Time) bool {
+	fields := schedule.fields
+	if !fields[0][t.Minute()] || !fields[1][t.Hour()] || !fields[3][int(t.Month())] {
+		return false
+	}
+	dom := fields[2][t.Day()]
+	dow := fields[4][int(t.Weekday())]
+	switch {
+	case schedule.domStar && schedule.dowStar:
+		return true
+	case schedule.domStar:
+		return dow
+	case schedule.dowStar:
+		return dom
+	default:
+		return dom || dow
+	}
+}
+
+// formatDuration prints a duration the way I would say it in a
+// report: whole days, hours, or minutes, whichever is the largest
+// unit that fits without a fraction.
+func formatDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour && d%(24*time.Hour) == 0:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	case d >= time.Hour && d%time.Hour == 0:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	}
 }
 
 func evidenceOr(message, fallback string) string {

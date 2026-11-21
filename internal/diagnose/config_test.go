@@ -205,6 +205,7 @@ func TestDescribeDefaultConfig(t *testing.T) {
 		"detectors:\n" +
 		"  crashloop: high, enabled\n" +
 		"  cronjob-never-ran: medium, enabled\n" +
+		"  cronjob-stale: medium, enabled\n" +
 		"  cronjob-suspended: medium, enabled\n" +
 		"  image-pull: high, enabled\n" +
 		"  job-failed: high, enabled\n" +

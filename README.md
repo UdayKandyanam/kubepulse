@@ -200,6 +200,7 @@ memory_threshold_percent: 80
 detectors:
   crashloop: high, enabled
   cronjob-never-ran: medium, enabled
+  cronjob-stale: medium, enabled
   cronjob-suspended: medium, enabled
   image-pull: high, enabled
   job-failed: high, enabled
@@ -284,6 +285,17 @@ Each detector is a small function over the snapshot, with its own tests. The sev
 * `job-failed` (high): a job with a Failed condition set to True, or with failed pods, nothing still active, and no Complete condition. A job that is still running is left alone, because its retries may still succeed.
 * `cronjob-suspended` (medium): a cronjob with `suspend` set to true. It is not also flagged as never ran, because the suspension explains the missing runs.
 * `cronjob-never-ran` (medium): a cronjob that is not suspended and has an empty `lastScheduleTime`.
+* `cronjob-stale` (medium): a cronjob that ran before but has stopped running on schedule. I compare `lastScheduleTime` with the snapshot `capturedAt` and work out the interval from the cron schedule itself: a cronjob counts as stale when the time since its last run is more than twice that interval, so at least one full scheduled run has been missed. A snapshot with an hourly cronjob last run at 08:00 and captured at 14:02 gives:
+
+```text
+KubePulse report for demo-cluster
+1 findings: 0 critical, 0 high, 1 medium, 0 low
+
+MEDIUM (1)
+  CronJob shop/hourly-sync: cronjob has not run on schedule, last run 6h ago
+    Evidence: last scheduled at 2026-11-13T08:00:00Z, snapshot captured at 2026-11-13T14:02:00Z, schedule "0 * * * *" runs every 1h
+    Next step: Check the cronjob controller and the job history for this cronjob. A run that stopped on schedule usually means the controller is down, the schedule stopped matching, or new jobs are being blocked.
+```
 
 ## Design choices
 
@@ -299,12 +311,12 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 * KubePulse does not read logs, so for a crashloop it can point at the container and the restart count, not at the stack trace.
 * Diff matches findings on their summary text. A finding whose summary changes between snapshots, a crashloop restart count climbing from 9 to 14, shows up as one resolved and one new finding rather than one unchanged finding. I know about this one and accept it for now: the alternative is matching on less, and calling two different problems the same finding is worse.
 * The cronjob never ran detector cannot tell a cronjob created a minute ago from one that has been broken for a week: both have an empty `lastScheduleTime`. I flag both and let the next step sort it out.
+* The stale cronjob detector stays silent when it cannot judge: a suspended cronjob, a schedule it cannot parse, or a snapshot with no parseable `capturedAt` or `lastScheduleTime`. Its interval comes from the first two runs the schedule produces after the last run, so a schedule whose interval changes, such as a monthly one, is judged on its next gap, not an average.
 * Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. It is a capture tool, not a watcher.
 
 ## Roadmap
 
 * A watch mode that collects on an interval and diffs against the previous snapshot, so the collect and diff halves run as one loop.
-* A stale cronjob detector that compares `lastScheduleTime` with `capturedAt`, so a cronjob that ran before but has missed recent schedules gets flagged too.
 
 ## License
 
