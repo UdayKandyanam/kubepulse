@@ -9,12 +9,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/UdayKandyanam/kubepulse/internal/collect"
 	"github.com/UdayKandyanam/kubepulse/internal/diagnose"
 	"github.com/UdayKandyanam/kubepulse/internal/diff"
 	"github.com/UdayKandyanam/kubepulse/internal/report"
 	"github.com/UdayKandyanam/kubepulse/internal/snapshot"
+	"github.com/UdayKandyanam/kubepulse/internal/watch"
 )
 
 func main() {
@@ -33,6 +35,8 @@ func run(args []string) int {
 		return runDiff(args[1:])
 	case "collect":
 		return runCollect(args[1:])
+	case "watch":
+		return runWatch(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return 0
@@ -48,6 +52,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  kubepulse diagnose [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] [--print-config] <snapshot.json>")
 	fmt.Fprintln(os.Stderr, "  kubepulse diff [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] [--print-config] <before.json> <after.json>")
 	fmt.Fprintln(os.Stderr, "  kubepulse collect [--kubeconfig <path>] [--namespace <ns>] [--output <file>]")
+	fmt.Fprintln(os.Stderr, "  kubepulse watch [--interval <duration>] [--rounds <n>] [--kubeconfig <path>] [--namespace <ns>] [--config <file>] [--fail-on critical|high|medium|low]")
 }
 
 // loadConfig returns the default config when no file is named, and
@@ -198,6 +203,70 @@ func runDiff(args []string) int {
 	}
 
 	if threshold != "" && diff.ShouldFailNew(res, threshold) {
+		return 1
+	}
+	return 0
+}
+
+// runWatch collects on an interval. The first round prints a full
+// report and each later round prints a diff against the round before
+// it. With no round count it runs until a collect fails or the
+// process is stopped. The fail-on exit code is only reached when the
+// watch ends on its own, so it is meant for counted runs in scripts.
+func runWatch(args []string) int {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	interval := fs.Duration("interval", 30*time.Second, "pause between rounds")
+	rounds := fs.Int("rounds", 0, "rounds to run before exiting (default: run until a collect fails or the process is stopped)")
+	kubeconfig := fs.String("kubeconfig", "", "path to the kubeconfig file (default: kubectl's own resolution)")
+	namespace := fs.String("namespace", "", "collect only this namespace (default: all namespaces)")
+	failOn := fs.String("fail-on", "", "exit with code 1 when a round adds a finding at or above this severity")
+	configPath := fs.String("config", "", "config file with detector thresholds and severity overrides")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		usage()
+		return 2
+	}
+	if *interval <= 0 {
+		fmt.Fprintf(os.Stderr, "kubepulse: invalid --interval %v (use a positive duration such as 30s or 2m)\n", *interval)
+		return 2
+	}
+	if *rounds < 0 {
+		fmt.Fprintf(os.Stderr, "kubepulse: invalid --rounds %d (use 0 or more)\n", *rounds)
+		return 2
+	}
+	var threshold diagnose.Severity
+	if *failOn != "" {
+		var err error
+		threshold, err = diagnose.ParseSeverity(*failOn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
+			return 2
+		}
+	}
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kubepulse: %v\n", err)
+		return 2
+	}
+	src := func() (*snapshot.Snapshot, error) {
+		return collect.Collect(collect.ExecRunner{}, collect.Options{
+			Kubeconfig: *kubeconfig,
+			Namespace:  *namespace,
+		})
+	}
+	res, err := watch.Run(os.Stdout, src, watch.Options{
+		Interval: *interval,
+		Rounds:   *rounds,
+		Config:   cfg,
+		FailOn:   threshold,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kubepulse: watch: %v\n", err)
+		return 2
+	}
+	if res.Failed {
 		return 1
 	}
 	return 0

@@ -102,6 +102,30 @@ Exit codes: `0` normally, `1` when `--fail-on` is set and a finding at or above 
 
 It runs kubectl with read only verbs: `get` for pods, deployments, nodes, events, jobs, and cronjobs, plus a raw `get` against the metrics API for pod memory usage. Jobs and cronjobs are collected the same way as the other resources, so the job and cronjob detectors run on collected snapshots too, not only on the examples or a snapshot assembled by hand. A cronjob lists its active jobs as object references in the API; the snapshot stores only the count, which is all the detectors read. The cluster name in the snapshot is the current context name, and the capture time is stamped when the command runs. Pod usage is optional: on a cluster without metrics-server that one read fails, and the snapshot is still written, just without usage numbers. Without `--output` the snapshot goes to stdout. If kubectl is not installed the command stops and says so: `kubepulse: kubectl not found in PATH: install kubectl or add it to PATH, then try again`.
 
+## Watch a cluster
+
+`watch` runs collect and diagnose as one loop, which is the scheduled job shape the diff section below describes, without a script around the two commands:
+
+```sh
+./kubepulse watch --interval 2m
+./kubepulse watch --interval 30s --rounds 10 --namespace shop --fail-on high
+```
+
+The first round prints a full report. Each later round collects again and prints a diff against the round before it, so what changed is the headline instead of the same full list every time. This run is against a test double for kubectl, first with an empty cluster, then with one pod that has no resource limits:
+
+```text
+KubePulse report for demo-cluster
+No problems found in this snapshot.
+
+KubePulse diff for demo-cluster
+1 new, 0 resolved, 0 unchanged
+
+NEW (1)
+  Pod shop/api-abc: containers without resource limits: api
+```
+
+With no `--rounds` the watch runs until a collect fails or the process is stopped, and a failed collect ends it with the round named in the error. `--config` works here too, and the same config is used for every round, so a finding cannot appear or vanish because the rules changed mid watch. `--fail-on` is checked at the end of a counted run: the first round counts all of its findings, later rounds count only new ones, the same rule as `diff`.
+
 ## Compare two snapshots
 
 `diff` diagnoses two snapshots and compares the findings. A finding matches across snapshots on its detector, object, and summary. The report has three sections:
@@ -312,11 +336,12 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 * Diff matches findings on their summary text. A finding whose summary changes between snapshots, a crashloop restart count climbing from 9 to 14, shows up as one resolved and one new finding rather than one unchanged finding. I know about this one and accept it for now: the alternative is matching on less, and calling two different problems the same finding is worse.
 * The cronjob never ran detector cannot tell a cronjob created a minute ago from one that has been broken for a week: both have an empty `lastScheduleTime`. I flag both and let the next step sort it out.
 * The stale cronjob detector stays silent when it cannot judge: a suspended cronjob, a schedule it cannot parse, or a snapshot with no parseable `capturedAt` or `lastScheduleTime`. Its interval comes from the first two runs the schedule produces after the last run, so a schedule whose interval changes, such as a monthly one, is judged on its next gap, not an average.
-* Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. It is a capture tool, not a watcher.
+* Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. Watch is that same read repeated on an interval: there is no event stream behind it, so a problem that appears and clears between rounds is never reported.
+* Watch prints text only. JSON is available from diagnose and diff, not from a watch run yet.
 
 ## Roadmap
 
-* A watch mode that collects on an interval and diffs against the previous snapshot, so the collect and diff halves run as one loop.
+* A JSON output mode for watch, one object per round, for feeding a watch run into a log pipeline instead of reading it live.
 
 ## License
 
