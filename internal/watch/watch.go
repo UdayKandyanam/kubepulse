@@ -36,6 +36,10 @@ type Options struct {
 	// round has a finding at or above it, or a later round has a
 	// new finding at or above it. Empty means never failed.
 	FailOn diagnose.Severity
+	// Format selects the output shape: "text" prints a report and
+	// diffs for reading live, "json" writes one JSON object per
+	// round for a log pipeline. Empty means "text".
+	Format string
 	// Sleep pauses between rounds. Nil uses time.Sleep.
 	Sleep func(time.Duration)
 }
@@ -68,7 +72,12 @@ func Run(w io.Writer, src Source, opts Options) (Result, error) {
 		}
 		findings := diagnose.DiagnoseWithConfig(snap, opts.Config)
 		if prevSnap == nil {
-			if err := report.Text(w, snap, findings); err != nil {
+			if opts.Format == "json" {
+				err = report.WatchReportJSON(w, res.Rounds+1, snap, findings)
+			} else {
+				err = report.Text(w, snap, findings)
+			}
+			if err != nil {
 				return res, fmt.Errorf("write report: %w", err)
 			}
 			if opts.FailOn != "" && diagnose.ShouldFail(findings, opts.FailOn) {
@@ -76,15 +85,24 @@ func Run(w io.Writer, src Source, opts Options) (Result, error) {
 			}
 		} else {
 			d := diff.Compare(prevFindings, findings)
-			if err := report.DiffText(w, prevSnap, snap, d); err != nil {
+			if opts.Format == "json" {
+				err = report.WatchDiffJSON(w, res.Rounds+1, prevSnap, snap, d)
+			} else {
+				err = report.DiffText(w, prevSnap, snap, d)
+			}
+			if err != nil {
 				return res, fmt.Errorf("write report: %w", err)
 			}
 			if opts.FailOn != "" && diff.ShouldFailNew(d, opts.FailOn) {
 				res.Failed = true
 			}
 		}
-		if _, err := fmt.Fprintln(w); err != nil {
-			return res, fmt.Errorf("write report: %w", err)
+		// Text rounds are separated by a blank line. JSON rounds are
+		// one object per line, so a blank line would break the stream.
+		if opts.Format != "json" {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return res, fmt.Errorf("write report: %w", err)
+			}
 		}
 		prevSnap = snap
 		prevFindings = findings

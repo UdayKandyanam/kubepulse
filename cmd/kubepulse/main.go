@@ -52,7 +52,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  kubepulse diagnose [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] [--print-config] <snapshot.json>")
 	fmt.Fprintln(os.Stderr, "  kubepulse diff [--format text|json] [--fail-on critical|high|medium|low] [--config <file>] [--print-config] <before.json> <after.json>")
 	fmt.Fprintln(os.Stderr, "  kubepulse collect [--kubeconfig <path>] [--namespace <ns>] [--output <file>]")
-	fmt.Fprintln(os.Stderr, "  kubepulse watch [--interval <duration>] [--rounds <n>] [--kubeconfig <path>] [--namespace <ns>] [--config <file>] [--fail-on critical|high|medium|low]")
+	fmt.Fprintln(os.Stderr, "  kubepulse watch [--format text|json] [--interval <duration>] [--rounds <n>] [--kubeconfig <path>] [--namespace <ns>] [--config <file>] [--fail-on critical|high|medium|low]")
 }
 
 // loadConfig returns the default config when no file is named, and
@@ -215,6 +215,7 @@ func runDiff(args []string) int {
 // watch ends on its own, so it is meant for counted runs in scripts.
 func runWatch(args []string) int {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	format := fs.String("format", "text", "output format: text or json (json writes one object per round)")
 	interval := fs.Duration("interval", 30*time.Second, "pause between rounds")
 	rounds := fs.Int("rounds", 0, "rounds to run before exiting (default: run until a collect fails or the process is stopped)")
 	kubeconfig := fs.String("kubeconfig", "", "path to the kubeconfig file (default: kubectl's own resolution)")
@@ -226,6 +227,10 @@ func runWatch(args []string) int {
 	}
 	if fs.NArg() != 0 {
 		usage()
+		return 2
+	}
+	if *format != "text" && *format != "json" {
+		fmt.Fprintf(os.Stderr, "kubepulse: invalid --format %q (use text or json)\n", *format)
 		return 2
 	}
 	if *interval <= 0 {
@@ -261,6 +266,7 @@ func runWatch(args []string) int {
 		Rounds:   *rounds,
 		Config:   cfg,
 		FailOn:   threshold,
+		Format:   *format,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kubepulse: watch: %v\n", err)

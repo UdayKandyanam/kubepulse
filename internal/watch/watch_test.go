@@ -2,6 +2,7 @@ package watch
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -115,6 +116,69 @@ func TestRunDoesNotFailOnUnchangedFinding(t *testing.T) {
 	}
 	if res.Failed {
 		t.Error("Failed = true, want false: the only finding is low, below the medium threshold, and unchanged in round 2")
+	}
+}
+
+func TestRunJSONModeWritesOneObjectPerRound(t *testing.T) {
+	var out bytes.Buffer
+	res, err := Run(&out, listSource(healthySnapshot(), brokenSnapshot(), brokenSnapshot()), Options{
+		Rounds: 3,
+		Config: diagnose.DefaultConfig(),
+		Format: "json",
+		Sleep:  func(time.Duration) {},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Rounds != 3 {
+		t.Errorf("Rounds = %d, want 3", res.Rounds)
+	}
+	text := out.String()
+	if strings.Contains(text, "\n\n") {
+		t.Errorf("output has a blank line, which breaks a one object per line stream:\n%s", text)
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("output has %d lines, want 3 (one per round):\n%s", len(lines), text)
+	}
+	var first map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("round 1 line is not valid JSON: %v\nline: %s", err, lines[0])
+	}
+	if first["round"] != float64(1) || first["kind"] != "report" {
+		t.Errorf("round 1 = round %v kind %v, want round 1 kind report", first["round"], first["kind"])
+	}
+	summary, ok := first["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("round 1 summary is %T, want an object", first["summary"])
+	}
+	if summary["low"] != float64(0) {
+		t.Errorf("round 1 summary low = %v, want 0", summary["low"])
+	}
+	var second map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("round 2 line is not valid JSON: %v\nline: %s", err, lines[1])
+	}
+	if second["round"] != float64(2) || second["kind"] != "diff" {
+		t.Errorf("round 2 = round %v kind %v, want round 2 kind diff", second["round"], second["kind"])
+	}
+	diffSummary, ok := second["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("round 2 summary is %T, want an object", second["summary"])
+	}
+	if diffSummary["new"] != float64(1) || diffSummary["resolved"] != float64(0) || diffSummary["unchanged"] != float64(0) {
+		t.Errorf("round 2 summary = %v, want new 1, resolved 0, unchanged 0", diffSummary)
+	}
+	var third map[string]any
+	if err := json.Unmarshal([]byte(lines[2]), &third); err != nil {
+		t.Fatalf("round 3 line is not valid JSON: %v\nline: %s", err, lines[2])
+	}
+	thirdSummary, ok := third["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("round 3 summary is %T, want an object", third["summary"])
+	}
+	if thirdSummary["new"] != float64(0) || thirdSummary["unchanged"] != float64(1) {
+		t.Errorf("round 3 summary = %v, want new 0, unchanged 1", thirdSummary)
 	}
 }
 

@@ -126,6 +126,15 @@ NEW (1)
 
 With no `--rounds` the watch runs until a collect fails or the process is stopped, and a failed collect ends it with the round named in the error. `--config` works here too, and the same config is used for every round, so a finding cannot appear or vanish because the rules changed mid watch. `--fail-on` is checked at the end of a counted run: the first round counts all of its findings, later rounds count only new ones, the same rule as `diff`.
 
+`--format json` writes one JSON object per round instead of text, so a watch run is a stream a log pipeline can read as it arrives. The first round is a report object, later rounds are diff objects with the same new, resolved, and unchanged split. The same two round test double run as above, in JSON mode:
+
+```json
+{"round":1,"kind":"report","cluster":"demo-cluster","summary":{"critical":0,"high":0,"low":0,"medium":0},"findings":[]}
+{"round":2,"kind":"diff","beforeCluster":"demo-cluster","afterCluster":"demo-cluster","summary":{"new":1,"resolved":0,"unchanged":0},"new":[{"severity":"low","detector":"no-resource-limits","object":"Pod shop/api-abc","summary":"containers without resource limits: api","evidence":"limits block is missing cpu or memory for the named containers","nextStep":"Set limits from measured usage, then watch for a week. Limits set from a guess become the next incident."}],"resolved":[],"unchanged":[]}
+```
+
+There is no blank line between rounds in JSON mode, and empty lists are written as `[]`, never `null`, so a reader can parse every line the same way.
+
 ## Compare two snapshots
 
 `diff` diagnoses two snapshots and compares the findings. A finding matches across snapshots on its detector, object, and summary. The report has three sections:
@@ -338,10 +347,6 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 * The stale cronjob detector stays silent when it cannot judge: a suspended cronjob, a schedule it cannot parse, or a snapshot with no parseable `capturedAt` or `lastScheduleTime`. Its interval comes from the first two runs the schedule produces after the last run, so a schedule whose interval changes, such as a monthly one, is judged on its next gap, not an average.
 * Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. Watch is that same read repeated on an interval: there is no event stream behind it, so a problem that appears and clears between rounds is never reported.
 * Watch prints text only. JSON is available from diagnose and diff, not from a watch run yet.
-
-## Roadmap
-
-* A JSON output mode for watch, one object per round, for feeding a watch run into a log pipeline instead of reading it live.
 
 ## License
 
