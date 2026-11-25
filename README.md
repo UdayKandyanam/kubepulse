@@ -346,7 +346,7 @@ Why diagnose only: the moment a tool can change things, every run needs a permis
 * The cronjob never ran detector cannot tell a cronjob created a minute ago from one that has been broken for a week: both have an empty `lastScheduleTime`. I flag both and let the next step sort it out.
 * The stale cronjob detector stays silent when it cannot judge: a suspended cronjob, a schedule it cannot parse, or a snapshot with no parseable `capturedAt` or `lastScheduleTime`. Its interval comes from the first two runs the schedule produces after the last run, so a schedule whose interval changes, such as a monthly one, is judged on its next gap, not an average.
 * Collect needs kubectl and a working context, and it reads the whole cluster (or the one namespace asked for) on every run. Watch is that same read repeated on an interval: there is no event stream behind it, so a problem that appears and clears between rounds is never reported.
-* Watch prints text only. JSON is available from diagnose and diff, not from a watch run yet.
+* Watch in JSON mode writes one JSON object per round with no blank line between rounds, so each line parses on its own and a reader that splits on newlines never sees an empty object.
 
 ## License
 
